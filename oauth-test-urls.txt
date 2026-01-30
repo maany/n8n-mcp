@@ -1,0 +1,86 @@
+# OAuth Testing URLs for n8n-mcp
+
+## Client Information
+Client ID: VSfqqyhZMCuYTCOCrkRrYzCMGFBvBIEy
+Client Name: Test MCP Client
+Redirect URI: http://localhost:8080/callback
+
+## Step 1: Create a Test User (via Admin API)
+curl -X POST http://localhost:3000/api/admin/users \
+  -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "password": "Test123!",
+    "name": "Test User"
+  }'
+
+## Step 2: Start OAuth Authorization Flow
+Copy this URL and open it in your browser:
+
+http://localhost:3000/api/auth/oauth2/authorize?client_id=VSfqqyhZMCuYTCOCrkRrYzCMGFBvBIEy&redirect_uri=http://localhost:8080/callback&response_type=code&scope=openid%20mcp:read&state=random-state&code_challenge=ML6i7bxuhakW_IREcH9XO5ER9DO_PVmJXmmg_-VuMRQ&code_challenge_method=S256
+
+## What happens:
+1. You'll be redirected to /sign-in
+2. Login with email: test@example.com, password: Test123!
+3. You'll be redirected to /consent
+4. Approve the requested scopes
+5. You'll be redirected to http://localhost:8080/callback?code=AUTHORIZATION_CODE&state=random-state
+
+## Step 3: Exchange Authorization Code for Token
+After you get the authorization code from the redirect URL, exchange it for an access token:
+
+curl -X POST http://localhost:3000/api/auth/oauth2/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code" \
+  -d "code=YOUR_AUTHORIZATION_CODE_FROM_STEP_2" \
+  -d "redirect_uri=http://localhost:8080/callback" \
+  -d "code_verifier=dGv4wZ86UYKDigVycISSbDcxTu8qaRRXme5G04r4gg" \
+  -d "client_id=VSfqqyhZMCuYTCOCrkRrYzCMGFBvBIEy"
+
+## Step 4: Test MCP Endpoint with OAuth Token
+
+# First, initialize the MCP session (required by MCP protocol)
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer YOUR_OAUTH_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2024-11-05",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "oauth-test-client",
+        "version": "1.0.0"
+      }
+    },
+    "id": 1
+  }'
+
+# Then, list available tools
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer YOUR_OAUTH_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":2}'
+
+# Example: Search for nodes
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer YOUR_OAUTH_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"search_nodes","arguments":{"query":"slack","limit":5}},"id":3}'
+
+## Notes:
+- The code_challenge and code_verifier must match (PKCE flow)
+- Code verifier for the example above: dGv4wZ86UYKDigVycISSbDcxTu8qaRRXme5G04r4gg
+- Generate new PKCE values:
+  CODE_VERIFIER=$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-43)
+  CODE_CHALLENGE=$(echo -n "$CODE_VERIFIER" | openssl dgst -sha256 -binary | base64 | tr -d '=' | tr '+/' '-_')
+
+## Discovery Endpoints:
+- OAuth Authorization Server Metadata: http://localhost:3000/.well-known/oauth-authorization-server
+- OpenID Configuration: http://localhost:3000/.well-known/openid-configuration
+- OAuth Protected Resource: http://localhost:3000/.well-known/oauth-protected-resource

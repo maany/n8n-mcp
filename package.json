@@ -15,7 +15,9 @@
     "n8n-mcp": "./dist/mcp/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && npm run copy:public",
+    "copy:public": "mkdir -p dist/public && cp -r src/public/* dist/public/ 2>/dev/null || true",
+    "auth:migrate": "better-auth migrate",
     "rebuild": "node dist/scripts/rebuild.js",
     "rebuild:optimized": "node dist/scripts/rebuild-optimized.js",
     "validate": "node dist/scripts/validate.js",
@@ -130,6 +132,7 @@
     "package.runtime.json"
   ],
   "devDependencies": {
+    "@better-auth/cli": "^1.4.18",
     "@faker-js/faker": "^9.9.0",
     "@testing-library/jest-dom": "^6.6.4",
     "@types/better-sqlite3": "^7.6.13",
@@ -149,6 +152,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@better-auth/oauth-provider": "^1.4.18",
     "@modelcontextprotocol/sdk": "1.20.1",
     "@n8n/n8n-nodes-langchain": "^2.4.3",
     "@supabase/supabase-js": "^2.57.4",

@@ -395,11 +395,13 @@ git clone https://github.com/czlonkowski/n8n-mcp.git
 cd n8n-mcp
 npm install
 npm run build
-npm run rebuild
+npm run rebuild  # Generates data/nodes.db (~70MB, takes ~2 minutes)
 
 # 2. Test it works
 npm start
 ```
+
+> **Note:** Database files (`data/*.db`) are generated locally and not committed to git. Run `npm run rebuild` to create `nodes.db` from the installed n8n packages.
 
 Add to Claude Desktop config:
 

@@ -97,13 +97,17 @@ docs/batch_*.jsonl
 docs/local/
 
 # Database files
-# Database files - nodes.db is now tracked directly
-# data/*.db
+# All database files are generated and should not be committed
+# - nodes.db: Generated via `npm run rebuild` from n8n packages
+# - auth.db: Contains OAuth users/tokens (sensitive data)
+# - templates.db: Generated from n8n.io API
+data/*.db
 data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 data/*.db.bak
 data/*.db.backup
 !data/.gitkeep
-!data/nodes.db
 
 # Claude Desktop configs (personal)
 claude_desktop_config.json

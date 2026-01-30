@@ -11,7 +11,7 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { N8NDocumentationMCPServer } from './mcp/server';
 import { ConsoleManager } from './utils/console-manager';
 import { logger } from './utils/logger';
-import { AuthManager } from './utils/auth';
+import { AuthManager, authHandler, verifyOAuthToken, auth } from './utils/auth';
 import { readFileSync } from 'fs';
 import dotenv from 'dotenv';
 import { getStartupBaseUrl, formatEndpointUrls, detectBaseUrl } from './utils/url-detector';
@@ -27,6 +27,7 @@ import {
 import { InstanceContext, validateInstanceContext } from './types/instance-context';
 import { SessionState } from './types/session-state';
 import { closeSharedDatabase } from './database/shared-database';
+import path from 'path';
 
 dotenv.config();
 
@@ -814,10 +815,10 @@ export class SingleSessionHTTPServer {
       const allowedOrigin = process.env.CORS_ORIGIN || '*';
       res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
       res.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id, X-Requested-With');
       res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
       res.setHeader('Access-Control-Max-Age', '86400');
-      
+
       if (req.method === 'OPTIONS') {
         res.sendStatus(204);
         return;
@@ -834,7 +835,106 @@ export class SingleSessionHTTPServer {
       });
       next();
     });
-    
+
+    // Serve OAuth UI pages from public directory
+    if (process.env.ENABLE_OAUTH === 'true') {
+      const publicPath = path.join(process.cwd(), 'dist', 'public');
+      app.use(express.static(publicPath));
+
+      // Explicit routes for OAuth pages (without .html extension)
+      app.get('/sign-in', (req, res) => {
+        res.sendFile(path.join(publicPath, 'sign-in.html'));
+      });
+
+      app.get('/consent', (req, res) => {
+        res.sendFile(path.join(publicPath, 'consent.html'));
+      });
+
+      logger.info('OAuth pages enabled at /sign-in and /consent');
+    }
+
+    // Mount Better-Auth OAuth provider (if enabled)
+    if (process.env.ENABLE_OAUTH === 'true') {
+      // Express v5 requires *splat syntax for catch-all routes
+      // See: https://www.better-auth.com/docs/integrations/express
+      app.all('/api/auth/*splat', authHandler as any);
+      logger.info('Better-Auth OAuth provider mounted at /api/auth/*');
+    }
+
+    // Well-known metadata endpoints for OAuth discovery
+    if (process.env.ENABLE_OAUTH === 'true') {
+      // MCP Protected Resource Metadata (OAuth discovery endpoint)
+      app.get('/.well-known/oauth-protected-resource', (req, res) => {
+        try {
+          const baseUrl = process.env.BETTER_AUTH_URL || `http://${req.get('host')}`;
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          res.json({
+            resource: baseUrl,
+            authorization_servers: [baseUrl],
+            bearer_methods_supported: ["header"],
+            scopes_supported: ["mcp:read", "mcp:write", "openid", "profile", "email"],
+            resource_types_supported: ["mcp_server"]
+          });
+        } catch (error) {
+          logger.error('Error generating resource metadata', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+    }
+
+    // Admin endpoint to create users (protected by AUTH_TOKEN)
+    if (process.env.ENABLE_OAUTH === 'true') {
+      app.post('/api/admin/users', jsonParser, async (req, res) => {
+        // Verify admin auth token
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith('Bearer ')) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        const token = authHeader.slice(7).trim();
+        const isValidToken = this.authToken &&
+          AuthManager.timingSafeCompare(token, this.authToken);
+
+        if (!isValidToken) {
+          logger.warn('Admin user creation failed: Invalid token', { ip: req.ip });
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        // Create user via better-auth
+        try {
+          const { email, password, name } = req.body;
+
+          if (!email || !password) {
+            res.status(400).json({ error: 'Email and password required' });
+            return;
+          }
+
+          const result = await auth.api.signUpEmail({
+            body: { email, password, name }
+          });
+
+          logger.info('Admin created user', { email, userId: result.user?.id });
+
+          res.json({
+            success: true,
+            user: {
+              id: result.user?.id,
+              email: result.user?.email,
+              name: result.user?.name
+            }
+          });
+        } catch (error: any) {
+          logger.error('User creation failed', error);
+          res.status(400).json({
+            error: error.message || 'User creation failed'
+          });
+        }
+      });
+    }
+
     // Root endpoint with API information
     app.get('/', (req, res) => {
       const port = parseInt(process.env.PORT || '3000');
@@ -1182,71 +1282,95 @@ export class SingleSessionHTTPServer {
         });
       }
       
-      // Enhanced authentication check with specific logging
+      // Dual authentication: try OAuth first, fallback to bearer token
       const authHeader = req.headers.authorization;
-      
-      // Check if Authorization header is missing
+
       if (!authHeader) {
-        logger.warn('Authentication failed: Missing Authorization header', { 
+        logger.warn('Authentication failed: Missing Authorization header', {
           ip: req.ip,
-          userAgent: req.get('user-agent'),
           reason: 'no_auth_header'
-        });
-        res.status(401).json({ 
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Unauthorized'
-          },
-          id: null
-        });
-        return;
-      }
-      
-      // Check if Authorization header has Bearer prefix
-      if (!authHeader.startsWith('Bearer ')) {
-        logger.warn('Authentication failed: Invalid Authorization header format (expected Bearer token)', { 
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          reason: 'invalid_auth_format',
-          headerPrefix: authHeader.substring(0, Math.min(authHeader.length, 10)) + '...'  // Log first 10 chars for debugging
-        });
-        res.status(401).json({ 
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Unauthorized'
-          },
-          id: null
-        });
-        return;
-      }
-      
-      // Extract token and trim whitespace
-      const token = authHeader.slice(7).trim();
-
-      // SECURITY: Use timing-safe comparison to prevent timing attacks
-      // See: https://github.com/czlonkowski/n8n-mcp/issues/265 (CRITICAL-02)
-      const isValidToken = this.authToken &&
-        AuthManager.timingSafeCompare(token, this.authToken);
-
-      if (!isValidToken) {
-        logger.warn('Authentication failed: Invalid token', {
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          reason: 'invalid_token'
         });
         res.status(401).json({
           jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Unauthorized'
-          },
+          error: { code: -32001, message: 'Unauthorized' },
           id: null
         });
         return;
       }
-      
+
+      let authenticated = false;
+      let authMethod = 'none';
+
+      // Try OAuth token verification if enabled
+      if (process.env.ENABLE_OAUTH === 'true' && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.slice(7).trim();
+        const oauthResult = await verifyOAuthToken(token);
+
+        if (oauthResult.valid) {
+          authenticated = true;
+          authMethod = 'oauth';
+          // Store OAuth user ID in request for session management
+          (req as any).oauthUserId = oauthResult.userId;
+          (req as any).oauthScopes = oauthResult.scopes;
+          logger.info('OAuth authentication successful', {
+            userId: oauthResult.userId,
+            scopes: oauthResult.scopes
+          });
+        }
+      }
+
+      // Fallback to legacy bearer token
+      if (!authenticated) {
+        if (!authHeader.startsWith('Bearer ')) {
+          logger.warn('Authentication failed: Invalid format', {
+            ip: req.ip,
+            reason: 'invalid_auth_format'
+          });
+          res.status(401).json({
+            jsonrpc: '2.0',
+            error: { code: -32001, message: 'Unauthorized' },
+            id: null
+          });
+          return;
+        }
+
+        const token = authHeader.slice(7).trim();
+        const isValidToken = this.authToken &&
+          AuthManager.timingSafeCompare(token, this.authToken);
+
+        if (!isValidToken) {
+          logger.warn('Authentication failed: Invalid token', {
+            ip: req.ip,
+            reason: 'invalid_token'
+          });
+          res.status(401).json({
+            jsonrpc: '2.0',
+            error: { code: -32001, message: 'Unauthorized' },
+            id: null
+          });
+          return;
+        }
+
+        authenticated = true;
+        authMethod = 'bearer_token';
+      }
+
+      logger.debug('Request authenticated', { method: authMethod });
+
+      // For OAuth-authenticated requests without a session ID, create an automatic session
+      // This allows OAuth clients to use the MCP endpoint without explicit session management
+      if (authMethod === 'oauth' && !req.headers['mcp-session-id']) {
+        // Generate a session ID based on the OAuth user
+        const oauthSessionId = `oauth-${(req as any).oauthUserId || 'user'}`;
+
+        logger.info('OAuth request without session ID - setting automatic session', {
+          generatedSessionId: oauthSessionId
+        });
+
+        // Set the session ID header so handleRequest can use it
+        req.headers['mcp-session-id'] = oauthSessionId;
+      }
+
       // Handle request with single session
       logger.info('Authentication successful - proceeding to handleRequest', {
         hasSession: !!this.session,

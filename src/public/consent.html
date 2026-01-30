@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authorization Request - n8n MCP</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Authorization Request</h1>
+    </div>
+
+    <div id="client-info" class="client-info">
+      <p class="client-name"><strong id="client-name-text"></strong> wants to access your account</p>
+      <p class="redirect-uri">Will redirect to: <code id="redirect-uri-text"></code></p>
+    </div>
+
+    <div class="scopes">
+      <h2>Requested Permissions</h2>
+      <ul id="scope-list" class="scope-list"></ul>
+    </div>
+
+    <div class="actions">
+      <button id="allow-btn" class="btn-primary">Allow Access</button>
+      <button id="deny-btn" class="btn-secondary">Deny</button>
+    </div>
+
+    <div id="error-message" class="error" role="alert"></div>
+  </div>
+
+  <script>
+    // Debug: Check if we have a stored result from previous consent attempt
+    const lastResult = sessionStorage.getItem('lastConsentResult');
+    if (lastResult) {
+      console.log('Previous consent result found:', JSON.parse(lastResult));
+      sessionStorage.removeItem('lastConsentResult');
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const clientId = urlParams.get('client_id');
+    const scope = urlParams.get('scope');
+    const redirectUri = urlParams.get('redirect_uri');
+
+    // Better-auth requires the entire query string as oauth_query
+    const oauthQuery = window.location.search.substring(1); // Remove leading '?'
+
+    // Scope descriptions for user-friendly display
+    const scopeDescriptions = {
+      'openid': 'Verify your identity',
+      'profile': 'Access your profile information',
+      'email': 'Access your email address',
+      'offline_access': 'Maintain access when you are offline',
+      'mcp:read': 'Read n8n node documentation and workflow data',
+      'mcp:write': 'Create and modify n8n workflows'
+    };
+
+    // Display consent details
+    function displayConsent() {
+      document.getElementById('client-name-text').textContent = clientId || 'Unknown Application';
+      document.getElementById('redirect-uri-text').textContent = redirectUri || 'Unknown';
+
+      const scopes = scope ? scope.split(' ') : [];
+      const scopeList = document.getElementById('scope-list');
+      scopeList.innerHTML = '';
+
+      scopes.forEach(s => {
+        const li = document.createElement('li');
+        const description = scopeDescriptions[s] || s;
+        li.innerHTML = `<strong>${s}</strong>: ${description}`;
+        scopeList.appendChild(li);
+      });
+    }
+
+    document.getElementById('allow-btn').addEventListener('click', async () => {
+      await submitConsent(true);
+    });
+
+    document.getElementById('deny-btn').addEventListener('click', async () => {
+      await submitConsent(false);
+    });
+
+    async function submitConsent(approved) {
+      const errorEl = document.getElementById('error-message');
+      errorEl.textContent = '';
+
+      try {
+        // Better-auth requires the signed oauth_query parameter
+        const consentData = {
+          oauth_query: oauthQuery,
+          accept: approved
+        };
+
+        console.log('Submitting consent:', JSON.stringify(consentData, null, 2));
+
+        const response = await fetch('/api/auth/oauth2/consent', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include', // Critical: include cookies for session
+          body: JSON.stringify(consentData)
+        });
+
+        console.log('Consent response status:', response.status);
+        console.log('Consent response headers:', Object.fromEntries(response.headers.entries()));
+
+        // Try to read response as text first
+        const responseText = await response.text();
+        console.log('Consent response body (text):', responseText);
+
+        if (response.ok) {
+          // Try to parse as JSON
+          let result;
+          try {
+            result = JSON.parse(responseText);
+            console.log('Consent result (parsed):', result);
+          } catch (e) {
+            console.warn('Response is not JSON:', responseText);
+            result = {};
+          }
+
+          // Store the result in sessionStorage before redirecting so we don't lose it
+          sessionStorage.setItem('lastConsentResult', JSON.stringify({
+            status: response.status,
+            result: result,
+            timestamp: new Date().toISOString()
+          }));
+
+          if (result.url) {
+            console.log('Redirecting to:', result.url);
+            window.location.href = result.url;
+          } else if (result.redirect_uri || result.redirectUri) {
+            const redirectUrl = result.redirect_uri || result.redirectUri;
+            console.log('Redirecting to redirect_uri:', redirectUrl);
+            window.location.href = redirectUrl;
+          } else {
+            console.error('ERROR: No redirect URL in response!');
+            console.error('Full response body:', responseText);
+            console.error('Parsed result:', result);
+            errorEl.textContent = 'Consent accepted but no redirect URL provided. Check console for details.';
+
+            // Don't reload - let user see the error
+            // window.location.reload();
+          }
+        } else {
+          let error;
+          try {
+            error = JSON.parse(responseText);
+          } catch (e) {
+            error = { message: responseText };
+          }
+          console.error('Consent error:', error);
+          errorEl.textContent = error.message || error.error_description || `Consent submission failed (${response.status})`;
+        }
+      } catch (error) {
+        console.error('Network error:', error);
+        errorEl.textContent = 'Network error. Please try again.';
+      }
+    }
+
+    // Initialize
+    if (!clientId || !scope || !oauthQuery) {
+      document.getElementById('error-message').textContent = 'Invalid authorization request - missing required parameters';
+      document.getElementById('allow-btn').disabled = true;
+      document.getElementById('deny-btn').disabled = true;
+    } else {
+      displayConsent();
+    }
+  </script>
+</body>
+</html>
