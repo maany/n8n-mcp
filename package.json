@@ -152,6 +152,7 @@
     "@modelcontextprotocol/sdk": "1.20.1",
     "@n8n/n8n-nodes-langchain": "^2.4.3",
     "@supabase/supabase-js": "^2.57.4",
+    "better-auth": "^1.4.18",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "express-rate-limit": "^7.1.5",
