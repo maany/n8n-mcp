@@ -896,11 +896,12 @@ export class SingleSessionHTTPServer {
       app.get('/.well-known/oauth-protected-resource', (req, res) => {
         try {
           const baseUrl = process.env.BETTER_AUTH_URL || `http://${req.get('host')}`;
+          const issuerUrl = `${baseUrl}/api/auth`;  // Better Auth issuer includes /api/auth path
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Cache-Control', 'public, max-age=3600');
           res.json({
-            resource: baseUrl,
-            authorization_servers: [baseUrl],
+            resource: issuerUrl,               // Use issuer URL to match Better Auth
+            authorization_servers: [issuerUrl], // Point to the auth server issuer
             bearer_methods_supported: ["header"],
             scopes_supported: ["mcp:read", "mcp:write", "openid", "profile", "email"],
             resource_types_supported: ["mcp_server"]
