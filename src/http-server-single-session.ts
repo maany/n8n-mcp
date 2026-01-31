@@ -863,6 +863,35 @@ export class SingleSessionHTTPServer {
 
     // Well-known metadata endpoints for OAuth discovery
     if (process.env.ENABLE_OAUTH === 'true') {
+      // OAuth Authorization Server Metadata (RFC 8414)
+      // Required by Claude Desktop to discover authorization and token endpoints
+      app.get('/.well-known/oauth-authorization-server', async (req, res) => {
+        try {
+          const metadata = await (auth as any).api.getOAuthServerConfig();
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          res.json(metadata);
+          logger.info('Served OAuth authorization server metadata');
+        } catch (error) {
+          logger.error('Error generating OAuth authorization server metadata', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+
+      // OpenID Connect Discovery (OIDC)
+      app.get('/.well-known/openid-configuration', async (req, res) => {
+        try {
+          const metadata = await (auth as any).api.getOpenIdConfig();
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          res.json(metadata);
+          logger.info('Served OpenID Connect configuration metadata');
+        } catch (error) {
+          logger.error('Error generating OpenID Connect metadata', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+
       // MCP Protected Resource Metadata (OAuth discovery endpoint)
       app.get('/.well-known/oauth-protected-resource', (req, res) => {
         try {
@@ -881,6 +910,8 @@ export class SingleSessionHTTPServer {
           res.status(500).json({ error: 'Internal server error' });
         }
       });
+
+      logger.info('OAuth discovery endpoints enabled at /.well-known/*');
     }
 
     // Admin endpoint to create users (protected by AUTH_TOKEN)
