@@ -64,27 +64,25 @@ RUN --mount=type=cache,target=/root/.npm \
     apk del python3 make g++
 
 # Copy built application from builder stage
-COPY --from=builder /app/dist ./dist
+COPY --chown=nodejs:nodejs --from=builder /app/dist ./dist
 
 # Copy pre-built nodes.db from database builder stage
 # This database (~70MB) is generated from n8n packages at build time
-COPY --from=db-builder /app/data/nodes.db ./data/nodes.db
+COPY --chown=nodejs:nodejs --from=db-builder /app/data/nodes.db ./data/nodes.db
 
 # Copy database schema
-COPY src/database/schema-optimized.sql ./src/database/
-COPY .env.example ./
+COPY --chown=nodejs:nodejs src/database/schema-optimized.sql ./src/database/
+COPY --chown=nodejs:nodejs .env.example ./
 
 # Copy OAuth UI files for better-auth integration
-COPY src/public ./dist/public
+COPY --chown=nodejs:nodejs src/public ./dist/public
 
 # Copy entrypoint script, config parser, OAuth scripts, and n8n-mcp command
-COPY docker/docker-entrypoint.sh /usr/local/bin/
-COPY docker/parse-config.js /app/docker/
-COPY docker/run-oauth-migrations.js /app/docker/
-COPY docker/create-admin-user.js /app/docker/
-COPY docker/n8n-mcp /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/n8n-mcp \
-    /app/docker/run-oauth-migrations.js /app/docker/create-admin-user.js
+COPY --chmod=755 docker/docker-entrypoint.sh /usr/local/bin/
+COPY --chown=nodejs:nodejs docker/parse-config.js /app/docker/
+COPY --chown=nodejs:nodejs --chmod=755 docker/run-oauth-migrations.js /app/docker/
+COPY --chown=nodejs:nodejs --chmod=755 docker/create-admin-user.js /app/docker/
+COPY --chmod=755 docker/n8n-mcp /usr/local/bin/
 
 # Add container labels
 LABEL org.opencontainers.image.source="https://github.com/czlonkowski/n8n-mcp"
