@@ -32,7 +32,7 @@ WORKDIR /app
 # Install full package dependencies including n8n for database generation
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --only=production
+    npm ci --omit=dev --legacy-peer-deps
 
 # Copy built scripts and database schema
 COPY --from=builder /app/dist/scripts ./dist/scripts
@@ -61,7 +61,7 @@ COPY package.runtime.json package.json
 # This enables native SQLite (better-sqlite3) instead of sql.js, preventing memory leaks
 RUN --mount=type=cache,target=/root/.npm \
     apk add --no-cache python3 make g++ && \
-    npm install --production --no-audit --no-fund && \
+    npm install --production --no-audit --no-fund --legacy-peer-deps && \
     apk del python3 make g++
 
 # Copy built application from builder stage
