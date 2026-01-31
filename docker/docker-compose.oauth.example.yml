@@ -1,0 +1,117 @@
+version: '3.8'
+
+# Example Docker Compose configuration for n8n-mcp with OAuth 2.1
+# This example demonstrates:
+# - OAuth provider with automatic admin user creation
+# - Persistent volume for user data (auth.db)
+# - Pre-built nodes.db included in image
+# - Health checks and resource limits
+
+services:
+  n8n-mcp:
+    image: n8n-mcp:latest
+    container_name: n8n-mcp-oauth
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      # Server Configuration
+      - MCP_MODE=http
+      - PORT=3000
+      - HOST=0.0.0.0
+
+      # OAuth Configuration (REQUIRED)
+      - ENABLE_OAUTH=true
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}  # Generate with: openssl rand -base64 32
+      - BETTER_AUTH_URL=http://localhost:3000     # Change to your public URL
+
+      # Admin User (Created on first startup)
+      - OAUTH_ADMIN_EMAIL=${OAUTH_ADMIN_EMAIL:-admin@example.com}
+      - OAUTH_ADMIN_PASSWORD=${OAUTH_ADMIN_PASSWORD}  # Required, min 8 chars
+      - OAUTH_ADMIN_NAME=Admin User
+
+      # Legacy Auth Token (still required for admin API)
+      - AUTH_TOKEN=${AUTH_TOKEN}  # Generate with: openssl rand -base64 32
+
+      # Optional: Logging
+      - LOG_LEVEL=info
+      - DISABLE_CONSOLE_OUTPUT=false
+
+    volumes:
+      # Persistent volume for OAuth database (users, tokens, sessions)
+      # nodes.db is included in the Docker image, no volume needed
+      - oauth-data:/app/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 5s
+      retries: 3
+
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+volumes:
+  # Named volume for OAuth database persistence
+  # This volume contains auth.db with user accounts and tokens
+  oauth-data:
+    driver: local
+
+# Production deployment with Docker secrets (recommended)
+# Uncomment and configure for production use:
+
+# secrets:
+#   better_auth_secret:
+#     file: ./secrets/better_auth_secret.txt
+#   auth_token:
+#     file: ./secrets/auth_token.txt
+#   oauth_admin_password:
+#     file: ./secrets/oauth_admin_password.txt
+
+# Then update the service to use secrets:
+# services:
+#   n8n-mcp:
+#     environment:
+#       - BETTER_AUTH_SECRET_FILE=/run/secrets/better_auth_secret
+#       - AUTH_TOKEN_FILE=/run/secrets/auth_token
+#       - OAUTH_ADMIN_PASSWORD_FILE=/run/secrets/oauth_admin_password
+#     secrets:
+#       - better_auth_secret
+#       - auth_token
+#       - oauth_admin_password
+
+# Usage:
+# 1. Create .env file with secrets:
+#    echo "BETTER_AUTH_SECRET=$(openssl rand -base64 32)" > .env
+#    echo "AUTH_TOKEN=$(openssl rand -base64 32)" >> .env
+#    echo "OAUTH_ADMIN_EMAIL=admin@example.com" >> .env
+#    echo "OAUTH_ADMIN_PASSWORD=YourSecurePassword123!" >> .env
+#
+# 2. Start the stack:
+#    docker-compose -f docker-compose.oauth.example.yml up -d
+#
+# 3. Check logs:
+#    docker-compose -f docker-compose.oauth.example.yml logs -f
+#
+# 4. Access the server:
+#    http://localhost:3000
+#
+# 5. OAuth endpoints:
+#    - Authorization: http://localhost:3000/api/auth/oauth2/authorize
+#    - Token: http://localhost:3000/api/auth/oauth2/token
+#    - Register Client: http://localhost:3000/api/auth/oauth2/register
+#
+# 6. Sign in:
+#    - Visit: http://localhost:3000/sign-in
+#    - Email: admin@example.com (or your OAUTH_ADMIN_EMAIL)
+#    - Password: YourSecurePassword123! (or your OAUTH_ADMIN_PASSWORD)

@@ -90,6 +90,13 @@ BETTER_AUTH_URL=http://localhost:3000
 
 # Admin API auth token (still required for backward compatibility)
 AUTH_TOKEN=your-auth-token-here
+
+# OAuth Admin User (Docker only, optional)
+# When running in Docker, an admin user will be created automatically
+# on first startup if these variables are provided
+OAUTH_ADMIN_EMAIL=admin@example.com
+OAUTH_ADMIN_PASSWORD=secure-password-here
+OAUTH_ADMIN_NAME=Admin User  # Optional, defaults to "Admin User"
 ```
 
 ### OAuth Configuration
@@ -220,6 +227,8 @@ npm run start:http
 
 ### 4. Create User
 
+**Option A: Via Admin API Endpoint**
+
 ```bash
 curl -X POST http://localhost:3000/api/admin/users \
   -H "Authorization: Bearer your-token" \
@@ -230,6 +239,26 @@ curl -X POST http://localhost:3000/api/admin/users \
     "name": "Test User"
   }'
 ```
+
+**Option B: Automatic Creation (Docker Only)**
+
+When running in Docker, set environment variables for automatic admin user creation:
+
+```bash
+docker run -d \
+  -e ENABLE_OAUTH=true \
+  -e BETTER_AUTH_SECRET=$(openssl rand -base64 32) \
+  -e BETTER_AUTH_URL=http://localhost:3000 \
+  -e OAUTH_ADMIN_EMAIL=admin@example.com \
+  -e OAUTH_ADMIN_PASSWORD=SecurePassword123! \
+  -e OAUTH_ADMIN_NAME="Admin User" \
+  -v oauth-data:/app/data \
+  -p 3000:3000 \
+  n8n-mcp:latest
+```
+
+The admin user will be created automatically on first container startup.
+If the user already exists, creation is skipped silently.
 
 ### 5. Register OAuth Client
 

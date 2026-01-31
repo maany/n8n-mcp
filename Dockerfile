@@ -15,15 +15,37 @@ RUN --mount=type=cache,target=/root/.npm \
     npm install --no-save typescript@^5.8.3 @types/node@^22.15.30 @types/express@^5.0.3 \
         @modelcontextprotocol/sdk@1.20.1 dotenv@^16.5.0 express@^5.1.0 axios@^1.10.0 \
         n8n-workflow@^2.4.2 uuid@^11.0.5 @types/uuid@^10.0.0 \
-        openai@^4.77.0 zod@3.24.1 lru-cache@^11.2.1 @supabase/supabase-js@^2.57.4
+        openai@^4.77.0 zod@3.24.1 lru-cache@^11.2.1 @supabase/supabase-js@^2.57.4 \
+        better-auth@^1.5.2 @better-auth/oauth-provider@^1.0.0
 
 # Copy source and build
 COPY src ./src
+COPY package.json ./
 # Note: src/n8n contains TypeScript types needed for compilation
 # These will be compiled but not included in runtime
 RUN npx tsc -p tsconfig.build.json
 
-# Stage 2: Runtime (minimal dependencies)
+# Stage 2: Database Builder (builds nodes.db with full n8n packages)
+FROM node:22-alpine AS db-builder
+WORKDIR /app
+
+# Install full package dependencies including n8n for database generation
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --only=production
+
+# Copy built scripts and database schema
+COPY --from=builder /app/dist/scripts ./dist/scripts
+COPY --from=builder /app/dist/database ./dist/database
+COPY src/database/schema-optimized.sql ./src/database/
+
+# Generate nodes.db from installed n8n packages
+# This takes ~2 minutes and creates ~70MB database
+RUN mkdir -p ./data && \
+    node dist/scripts/rebuild.js && \
+    ls -lh ./data/nodes.db
+
+# Stage 3: Runtime (minimal dependencies)
 FROM node:22-alpine AS runtime
 WORKDIR /app
 
@@ -42,20 +64,28 @@ RUN --mount=type=cache,target=/root/.npm \
     npm install --production --no-audit --no-fund && \
     apk del python3 make g++
 
-# Copy built application
+# Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Copy pre-built database and required files
-# Cache bust: 2025-07-06-trigger-fix-v3 - includes is_trigger=true for webhook,cron,interval,emailReadImap
-COPY data/nodes.db ./data/
+# Copy pre-built nodes.db from database builder stage
+# This database (~70MB) is generated from n8n packages at build time
+COPY --from=db-builder /app/data/nodes.db ./data/nodes.db
+
+# Copy database schema
 COPY src/database/schema-optimized.sql ./src/database/
 COPY .env.example ./
 
-# Copy entrypoint script, config parser, and n8n-mcp command
+# Copy OAuth UI files for better-auth integration
+COPY src/public ./dist/public
+
+# Copy entrypoint script, config parser, OAuth scripts, and n8n-mcp command
 COPY docker/docker-entrypoint.sh /usr/local/bin/
 COPY docker/parse-config.js /app/docker/
+COPY docker/run-oauth-migrations.js /app/docker/
+COPY docker/create-admin-user.js /app/docker/
 COPY docker/n8n-mcp /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/n8n-mcp
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/n8n-mcp \
+    /app/docker/run-oauth-migrations.js /app/docker/create-admin-user.js
 
 # Add container labels
 LABEL org.opencontainers.image.source="https://github.com/czlonkowski/n8n-mcp"

@@ -51,6 +51,41 @@ if [ ! -d "$DB_DIR" ]; then
     fi
 fi
 
+# OAuth database migrations (if enabled)
+if [ "$ENABLE_OAUTH" = "true" ]; then
+    log_message "Running OAuth database migrations..."
+
+    # Ensure data directory exists before migrations
+    mkdir -p /app/data
+
+    # Run migrations using Node.js script (no CLI dependency needed)
+    if [ -f "/app/docker/run-oauth-migrations.js" ]; then
+        cd /app && node docker/run-oauth-migrations.js || {
+            log_message "WARNING: OAuth migrations failed, OAuth features may not work" >&2
+        }
+    else
+        log_message "WARNING: OAuth migration script not found, skipping migrations" >&2
+    fi
+
+    # Create admin user if credentials provided
+    if [ -n "$OAUTH_ADMIN_EMAIL" ] && [ -n "$OAUTH_ADMIN_PASSWORD" ]; then
+        if [ -f "/app/docker/create-admin-user.js" ]; then
+            log_message "Creating OAuth admin user..."
+            cd /app && node docker/create-admin-user.js || {
+                log_message "ERROR: Admin user creation failed" >&2
+                exit 1
+            }
+        else
+            log_message "WARNING: Admin user creation script not found" >&2
+        fi
+    fi
+
+    # Fix permissions on auth database if running as root
+    if [ "$(id -u)" = "0" ] && [ -f "/app/data/auth.db" ]; then
+        chown nodejs:nodejs /app/data/auth.db
+    fi
+fi
+
 # Database initialization with file locking to prevent race conditions
 if [ ! -f "$DB_PATH" ]; then
     log_message "Database not found at $DB_PATH. Initializing..."

@@ -9,7 +9,7 @@
 [![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fczlonkowski%2Fn8n--mcp-green.svg)](https://github.com/czlonkowski/n8n-mcp/pkgs/container/n8n-mcp)
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/n8n-mcp?referralCode=n8n-mcp)
 
-A Model Context Protocol (MCP) server that provides AI assistants with comprehensive access to n8n node documentation, properties, and operations. Deploy in minutes to give Claude and other AI assistants deep knowledge about n8n's 1,084 workflow automation nodes (537 core + 547 community).
+A Model Context Protocol (MCP) server that provides AI assistants with comprehensive access to n8n node documentation, properties, and operations. Deploy in minutes to give Claude and other AI assistants deep knowledge about n8n's 1,084 workflow automation nodes (537 core + 547 community). Includes built-in OAuth 2.1/OIDC provider for secure multi-user access.
 
 ## Overview
 
@@ -23,6 +23,7 @@ n8n-MCP serves as a bridge between n8n's workflow automation platform and AI mod
 - 💡 **Real-world examples** - 2,646 pre-extracted configurations from popular templates
 - 🎯 **Template library** - 2,709 workflow templates with 100% metadata coverage
 - 🌐 **Community nodes** - Search verified community integrations with `source` filter (NEW!)
+- 🔐 **OAuth 2.1 / OIDC** - Built-in authentication provider for secure HTTP deployments (NEW!)
 
 
 ## ⚠️ Important Safety Warning
@@ -305,6 +306,131 @@ Set in your environment file or docker-compose.yml:
 environment:
   N8N_MCP_TELEMETRY_DISABLED: "true"
 ```
+
+## 🔐 OAuth 2.1 / OIDC Authentication (HTTP Mode)
+
+n8n-mcp now includes a built-in **OAuth 2.1 provider** with **OpenID Connect (OIDC)** support for secure authentication in HTTP mode. Perfect for remote deployments, multi-user environments, and production use.
+
+### Quick Start with Docker
+
+Get OAuth authentication running in 2 minutes:
+
+```bash
+docker run -d \
+  --name n8n-mcp-oauth \
+  -p 3000:3000 \
+  -e ENABLE_OAUTH=true \
+  -e BETTER_AUTH_SECRET=$(openssl rand -base64 32) \
+  -e BETTER_AUTH_URL=http://localhost:3000 \
+  -e OAUTH_ADMIN_EMAIL=admin@example.com \
+  -e OAUTH_ADMIN_PASSWORD=SecurePassword123! \
+  -v n8n-mcp-data:/app/data \
+  ghcr.io/czlonkowski/n8n-mcp:latest
+```
+
+**What you get:**
+- ✅ Standards-compliant OAuth 2.1 with PKCE enforcement
+- ✅ OpenID Connect for identity verification
+- ✅ Admin user created automatically on first startup
+- ✅ Persistent user database (auth.db)
+- ✅ Dual authentication (OAuth + legacy bearer tokens)
+- ✅ Custom sign-in and consent pages
+- ✅ Well-known discovery endpoints
+
+### Features
+
+**OAuth 2.1 Compliance:**
+- Authorization code flow with PKCE (S256 required)
+- State parameter for CSRF protection
+- Hashed token storage (SHA-256)
+- Configurable token expiration (1 hour access, 30 days refresh)
+
+**OIDC Support:**
+- OpenID Connect discovery (`.well-known/openid-configuration`)
+- ID tokens with user claims
+- UserInfo endpoint
+- Standard scopes: `openid`, `profile`, `email`
+
+**MCP-Specific Scopes:**
+- `mcp:read` - Read n8n documentation and workflows
+- `mcp:write` - Create and modify n8n workflows
+
+**Security:**
+- Automatic database migrations on container start
+- Token introspection via database (no HTTP overhead)
+- Session timeout: 30 minutes (configurable)
+- Admin user password validation (minimum 8 characters)
+
+### Documentation
+
+📘 **[Complete OAuth Implementation Guide](./OAUTH_IMPLEMENTATION.md)**
+- Full setup instructions
+- Configuration reference
+- Testing guide with curl examples
+- Troubleshooting (8 common issues)
+- Security best practices
+
+🚀 **[OAuth Quick Start (Docker)](./docker/OAUTH_QUICKSTART.md)**
+- Get running in 2 minutes
+- Docker Compose examples
+- Production deployment guide
+
+🗄️ **[Database Strategy Guide](./docker/DATABASE_STRATEGY.md)**
+- Database initialization explained
+- Migration strategy
+- Admin user auto-creation
+- Volume configuration
+
+### OAuth Endpoints
+
+When `ENABLE_OAUTH=true`, the following endpoints are available:
+
+- **Authorization**: `/api/auth/oauth2/authorize`
+- **Token Exchange**: `/api/auth/oauth2/token`
+- **Client Registration**: `/api/auth/oauth2/register`
+- **OIDC Discovery**: `/.well-known/openid-configuration`
+- **Sign-In Page**: `/sign-in`
+- **Consent Page**: `/consent`
+
+### Environment Variables
+
+```bash
+# Enable OAuth provider
+ENABLE_OAUTH=true
+
+# Secret for signing tokens (required)
+BETTER_AUTH_SECRET=your-secret-here  # Generate: openssl rand -base64 32
+
+# Base URL for OAuth redirects (required)
+BETTER_AUTH_URL=http://localhost:3000
+
+# Admin user (optional, Docker only)
+OAUTH_ADMIN_EMAIL=admin@example.com
+OAUTH_ADMIN_PASSWORD=SecurePassword123!
+OAUTH_ADMIN_NAME=Admin User
+```
+
+### MCP Client Integration
+
+After getting an OAuth access token, use it to authenticate MCP requests:
+
+```bash
+# Initialize MCP session
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"my-client","version":"1.0.0"}},"id":1}'
+
+# List MCP tools
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":2}'
+```
+
+> **Note**: OAuth sessions are created automatically - no manual session ID management needed!
 
 ## ⚙️ Database & Memory Configuration
 
@@ -920,6 +1046,11 @@ This tool was created to benefit everyone in the n8n community without friction.
   - Memory and output parser checks
 - **🔗 Dependency Analysis**: Understand property relationships and conditions
 - **🎯 Template Discovery**: 2,500+ workflow templates with smart filtering
+- **🔐 OAuth 2.1 / OIDC Provider**: Built-in authentication for HTTP mode (NEW!)
+  - Standards-compliant OAuth 2.1 with PKCE enforcement
+  - OpenID Connect (OIDC) support for identity verification
+  - Automatic admin user creation in Docker
+  - Dual authentication (OAuth + legacy bearer tokens)
 - **⚡ Fast Response**: Average query time ~12ms with optimized SQLite
 - **🌐 Universal Compatibility**: Works with any Node.js version
 
@@ -1116,6 +1247,11 @@ npm run dev:http       # HTTP dev mode
 - [Claude Desktop Setup](./docs/README_CLAUDE_SETUP.md) - Detailed Claude configuration
 - [Docker Guide](./docs/DOCKER_README.md) - Advanced Docker deployment options
 - [MCP Quick Start](./docs/MCP_QUICK_START_GUIDE.md) - Get started quickly with n8n-MCP
+
+### Authentication & Security
+- [OAuth 2.1 Implementation](./OAUTH_IMPLEMENTATION.md) - Complete OAuth/OIDC setup guide (NEW!)
+- [OAuth Quick Start (Docker)](./docker/OAUTH_QUICKSTART.md) - Get OAuth running in 2 minutes
+- [Database Strategy](./docker/DATABASE_STRATEGY.md) - Docker database initialization guide
 
 ### Feature Documentation
 - [Workflow Diff Operations](./docs/workflow-diff-examples.md) - Token-efficient workflow updates (NEW!)
