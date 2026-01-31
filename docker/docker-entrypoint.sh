@@ -55,8 +55,24 @@ fi
 if [ "$ENABLE_OAUTH" = "true" ]; then
     log_message "Running OAuth database migrations..."
 
-    # Ensure data directory exists before migrations
-    mkdir -p /app/data
+    # Ensure data directory exists with proper permissions
+    if [ ! -d "/app/data" ]; then
+        mkdir -p /app/data 2>/dev/null || {
+            log_message "WARNING: Cannot create /app/data directory (permission denied)" >&2
+            log_message "This is likely due to docker-compose 'user:' override." >&2
+            log_message "Solution: Remove 'user: 1000:1000' from docker-compose or run as root" >&2
+            exit 1
+        }
+    fi
+
+    # Verify directory is writable
+    if [ ! -w "/app/data" ]; then
+        log_message "ERROR: /app/data directory is not writable" >&2
+        log_message "Current user: $(id)" >&2
+        log_message "Directory permissions: $(ls -ld /app/data)" >&2
+        log_message "Solution: Remove 'user:' override from docker-compose or run as root" >&2
+        exit 1
+    fi
 
     # Run migrations using Node.js script (no CLI dependency needed)
     if [ -f "/app/docker/run-oauth-migrations.js" ]; then
