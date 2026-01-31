@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/root/.npm \
         @modelcontextprotocol/sdk@1.20.1 dotenv@^16.5.0 express@^5.1.0 axios@^1.10.0 \
         n8n-workflow@^2.4.2 uuid@^11.0.5 @types/uuid@^10.0.0 \
         openai@^4.77.0 zod@3.24.1 lru-cache@^11.2.1 @supabase/supabase-js@^2.57.4 \
-        better-auth@^1.4.18 @better-auth/oauth-provider@^1.4.18
+        better-auth@^1.4.18 @better-auth/oauth-provider@^1.4.18 better-sqlite3@^11.10.0 @types/better-sqlite3@^7.6.12
 
 # Copy source and build
 COPY src ./src
@@ -34,9 +34,10 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --omit=dev --legacy-peer-deps
 
-# Copy built scripts and database schema
+# Copy built scripts, database, and utils (needed for logger)
 COPY --from=builder /app/dist/scripts ./dist/scripts
 COPY --from=builder /app/dist/database ./dist/database
+COPY --from=builder /app/dist/utils ./dist/utils
 COPY src/database/schema-optimized.sql ./src/database/
 
 # Generate nodes.db from installed n8n packages
