@@ -34,10 +34,8 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --omit=dev --legacy-peer-deps
 
-# Copy built scripts, database, and utils (needed for logger)
-COPY --from=builder /app/dist/scripts ./dist/scripts
-COPY --from=builder /app/dist/database ./dist/database
-COPY --from=builder /app/dist/utils ./dist/utils
+# Copy entire dist folder (rebuild script needs loaders, parsers, mappers, services, etc.)
+COPY --from=builder /app/dist ./dist
 COPY src/database/schema-optimized.sql ./src/database/
 
 # Generate nodes.db from installed n8n packages
