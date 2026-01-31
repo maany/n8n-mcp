@@ -37,7 +37,8 @@ const authConfig = process.env.ENABLE_OAUTH === 'true' ? {
             accessTokenExpiresIn: 3600,
             refreshTokenExpiresIn: 2592000,
             validAudiences: [
-                process.env.BETTER_AUTH_URL || "http://localhost:3000"
+                process.env.BETTER_AUTH_URL || "http://localhost:3000",
+                `${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/api/auth`
             ],
             storeClientSecret: "hashed",
             disableJwtPlugin: false

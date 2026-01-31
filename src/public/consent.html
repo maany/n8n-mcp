@@ -131,6 +131,9 @@
           if (result.url) {
             console.log('Redirecting to:', result.url);
             window.location.href = result.url;
+          } else if (result.uri) {
+            console.log('Redirecting to uri:', result.uri);
+            window.location.href = result.uri;
           } else if (result.redirect_uri || result.redirectUri) {
             const redirectUrl = result.redirect_uri || result.redirectUri;
             console.log('Redirecting to redirect_uri:', redirectUrl);
