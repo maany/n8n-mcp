@@ -17,8 +17,6 @@ import dotenv from 'dotenv';
 import { getStartupBaseUrl, formatEndpointUrls, detectBaseUrl } from './utils/url-detector';
 import { PROJECT_VERSION } from './utils/version';
 import { v4 as uuidv4 } from 'uuid';
-import { createHash } from 'crypto';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import {
   negotiateProtocolVersion,
   logProtocolNegotiation,
@@ -28,6 +26,7 @@ import { InstanceContext, validateInstanceContext } from './types/instance-conte
 import { SessionState } from './types/session-state';
 import { closeSharedDatabase } from './database/shared-database';
 import path from 'path';
+import Database from 'better-sqlite3';
 
 dotenv.config();
 
@@ -61,6 +60,7 @@ interface SessionMetrics {
   expiredSessions: number;
   lastCleanup: Date;
 }
+
 
 /**
  * Extract multi-tenant headers in a type-safe manner
@@ -99,7 +99,12 @@ function logSecurityEvent(
 }
 
 export class SingleSessionHTTPServer {
-  // Map to store transports by session ID (following SDK pattern)
+  // Single session transport and server - created lazily on first request
+  private singleTransport: StreamableHTTPServerTransport | null = null;
+  private singleServer: N8NDocumentationMCPServer | null = null;
+  private singleSessionId: string | null = null;
+
+  // Map to store transports by session ID (following SDK pattern) - kept for multi-session compatibility
   private transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
   private servers: { [sessionId: string]: N8NDocumentationMCPServer } = {};
   private sessionMetadata: { [sessionId: string]: { lastAccess: Date; createdAt: Date } } = {};
@@ -116,14 +121,67 @@ export class SingleSessionHTTPServer {
   ) * 60 * 1000;
   private authToken: string | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
-  
+
   constructor() {
     // Validate environment on construction
     this.validateEnvironment();
-    // No longer pre-create session - will be created per initialize request following SDK pattern
-    
+    // Session will be created lazily on first request
+
     // Start periodic session cleanup
     this.startSessionCleanup();
+  }
+
+  /**
+   * Get or create the single session transport
+   * Creates transport and server lazily on first request
+   */
+  private async getOrCreateSingleTransport(instanceContext?: InstanceContext): Promise<StreamableHTTPServerTransport> {
+    if (!this.singleTransport) {
+      this.singleSessionId = uuidv4();
+      logger.info('Creating single session transport', { sessionId: this.singleSessionId });
+
+      this.singleServer = new N8NDocumentationMCPServer(instanceContext);
+
+      this.singleTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => this.singleSessionId!,
+        enableJsonResponse: true,
+        onsessioninitialized: (sessionId: string) => {
+          logger.info('Single session initialized', { sessionId });
+          // Store in the maps for compatibility
+          this.transports[sessionId] = this.singleTransport!;
+          this.servers[sessionId] = this.singleServer!;
+          this.sessionMetadata[sessionId] = {
+            lastAccess: new Date(),
+            createdAt: new Date()
+          };
+          this.sessionContexts[sessionId] = instanceContext;
+        }
+      });
+
+      // Set up cleanup handlers
+      this.singleTransport.onclose = () => {
+        logger.info('Single session transport closed', { sessionId: this.singleSessionId });
+        this.singleTransport = null;
+        this.singleServer = null;
+        if (this.singleSessionId) {
+          delete this.transports[this.singleSessionId];
+          delete this.servers[this.singleSessionId];
+          delete this.sessionMetadata[this.singleSessionId];
+          delete this.sessionContexts[this.singleSessionId];
+        }
+        this.singleSessionId = null;
+      };
+
+      this.singleTransport.onerror = (error: Error) => {
+        logger.error('Single session transport error', { error: error.message });
+      };
+
+      // Connect server to transport
+      await this.singleServer.connect(this.singleTransport);
+      logger.info('Single session server connected to transport');
+    }
+
+    return this.singleTransport;
   }
   
   /**
@@ -456,213 +514,32 @@ export class SingleSessionHTTPServer {
     instanceContext?: InstanceContext
   ): Promise<void> {
     const startTime = Date.now();
-    
+
     // Wrap all operations to prevent console interference
     return this.consoleManager.wrapOperation(async () => {
       try {
-        const sessionId = req.headers['mcp-session-id'] as string | undefined;
-        const isInitialize = req.body ? isInitializeRequest(req.body) : false;
-        
-        // Log comprehensive incoming request details for debugging
-        logger.info('handleRequest: Processing MCP request - SDK PATTERN', {
-          requestId: req.get('x-request-id') || 'unknown',
-          sessionId: sessionId,
-          method: req.method,
-          url: req.url,
-          bodyType: typeof req.body,
-          bodyContent: req.body ? JSON.stringify(req.body, null, 2) : 'undefined',
-          existingTransports: Object.keys(this.transports),
-          isInitializeRequest: isInitialize
+        logger.info('[TRACE] handleRequest ENTRY - using single session', {
+          acceptHeader: req.headers.accept,
+          method: req.body?.method
         });
-        
-        let transport: StreamableHTTPServerTransport;
-        
-        if (isInitialize) {
-          // Check session limits before creating new session
-          if (!this.canCreateSession()) {
-            logger.warn('handleRequest: Session limit reached', {
-              currentSessions: this.getActiveSessionCount(),
-              maxSessions: MAX_SESSIONS
-            });
-            
-            res.status(429).json({
-              jsonrpc: '2.0',
-              error: {
-                code: -32000,
-                message: `Session limit reached (${MAX_SESSIONS}). Please wait for existing sessions to expire.`
-              },
-              id: req.body?.id || null
-            });
-            return;
-          }
-          
-          // For initialize requests: always create new transport and server
-          logger.info('handleRequest: Creating new transport for initialize request');
 
-          // EAGER CLEANUP: Remove existing sessions for the same instance
-          // This prevents memory buildup when clients reconnect without proper cleanup
-          if (instanceContext?.instanceId) {
-            const sessionsToRemove: string[] = [];
-            for (const [existingSessionId, context] of Object.entries(this.sessionContexts)) {
-              if (context?.instanceId === instanceContext.instanceId) {
-                sessionsToRemove.push(existingSessionId);
-              }
-            }
-            for (const oldSessionId of sessionsToRemove) {
-              // Double-check session still exists (may have been cleaned by concurrent request)
-              if (!this.transports[oldSessionId]) {
-                continue;
-              }
-              logger.info('Cleaning up previous session for instance', {
-                instanceId: instanceContext.instanceId,
-                oldSession: oldSessionId,
-                reason: 'instance_reconnect'
-              });
-              await this.removeSession(oldSessionId, 'instance_reconnect');
-            }
-          }
+        // Use the single session transport for all requests
+        const transport = await this.getOrCreateSingleTransport(instanceContext);
 
-          // Generate session ID based on multi-tenant configuration
-          let sessionIdToUse: string;
-
-          const isMultiTenantEnabled = process.env.ENABLE_MULTI_TENANT === 'true';
-          const sessionStrategy = process.env.MULTI_TENANT_SESSION_STRATEGY || 'instance';
-
-          if (isMultiTenantEnabled && sessionStrategy === 'instance' && instanceContext?.instanceId) {
-            // In multi-tenant mode with instance strategy, create session per instance
-            // This ensures each tenant gets isolated sessions
-            // Include configuration hash to prevent collisions with different configs
-            const configHash = createHash('sha256')
-              .update(JSON.stringify({
-                url: instanceContext.n8nApiUrl,
-                instanceId: instanceContext.instanceId
-              }))
-              .digest('hex')
-              .substring(0, 8);
-
-            sessionIdToUse = `instance-${instanceContext.instanceId}-${configHash}-${uuidv4()}`;
-            logger.info('Multi-tenant mode: Creating instance-specific session', {
-              instanceId: instanceContext.instanceId,
-              configHash,
-              sessionId: sessionIdToUse
-            });
-          } else {
-            // Use client-provided session ID or generate a standard one
-            sessionIdToUse = sessionId || uuidv4();
-          }
-
-          const server = new N8NDocumentationMCPServer(instanceContext);
-          
-          transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => sessionIdToUse,
-            onsessioninitialized: (initializedSessionId: string) => {
-              // Store both transport and server by session ID when session is initialized
-              logger.info('handleRequest: Session initialized, storing transport and server', { 
-                sessionId: initializedSessionId 
-              });
-              this.transports[initializedSessionId] = transport;
-              this.servers[initializedSessionId] = server;
-              
-              // Store session metadata and context
-              this.sessionMetadata[initializedSessionId] = {
-                lastAccess: new Date(),
-                createdAt: new Date()
-              };
-              this.sessionContexts[initializedSessionId] = instanceContext;
-            }
-          });
-          
-          // Set up cleanup handlers
-          transport.onclose = () => {
-            const sid = transport.sessionId;
-            if (sid) {
-              logger.info('handleRequest: Transport closed, cleaning up', { sessionId: sid });
-              this.removeSession(sid, 'transport_closed');
-            }
-          };
-          
-          // Handle transport errors to prevent connection drops
-          transport.onerror = (error: Error) => {
-            const sid = transport.sessionId;
-            logger.error('Transport error', { sessionId: sid, error: error.message });
-            if (sid) {
-              this.removeSession(sid, 'transport_error').catch(err => {
-                logger.error('Error during transport error cleanup', { error: err });
-              });
-            }
-          };
-          
-          // Connect the server to the transport BEFORE handling the request
-          logger.info('handleRequest: Connecting server to new transport');
-          await server.connect(transport);
-          
-        } else if (sessionId && this.transports[sessionId]) {
-          // Validate session ID format
-          if (!this.isValidSessionId(sessionId)) {
-            logger.warn('handleRequest: Invalid session ID format', { sessionId });
-            res.status(400).json({
-              jsonrpc: '2.0',
-              error: {
-                code: -32602,
-                message: 'Invalid session ID format'
-              },
-              id: req.body?.id || null
-            });
-            return;
-          }
-          
-          // For non-initialize requests: reuse existing transport for this session
-          logger.info('handleRequest: Reusing existing transport for session', { sessionId });
-          transport = this.transports[sessionId];
-
-          // In multi-tenant shared mode, update instance context if provided
-          const isMultiTenantEnabled = process.env.ENABLE_MULTI_TENANT === 'true';
-          const sessionStrategy = process.env.MULTI_TENANT_SESSION_STRATEGY || 'instance';
-
-          if (isMultiTenantEnabled && sessionStrategy === 'shared' && instanceContext) {
-            // Update the context for this session with locking to prevent race conditions
-            await this.switchSessionContext(sessionId, instanceContext);
-          }
-
-          // Update session access time
-          this.updateSessionAccess(sessionId);
-          
-        } else {
-          // Invalid request - no session ID and not an initialize request
-          const errorDetails = {
-            hasSessionId: !!sessionId,
-            isInitialize: isInitialize,
-            sessionIdValid: sessionId ? this.isValidSessionId(sessionId) : false,
-            sessionExists: sessionId ? !!this.transports[sessionId] : false
-          };
-          
-          logger.warn('handleRequest: Invalid request - no session ID and not initialize', errorDetails);
-          
-          let errorMessage = 'Bad Request: No valid session ID provided and not an initialize request';
-          if (sessionId && !this.isValidSessionId(sessionId)) {
-            errorMessage = 'Bad Request: Invalid session ID format';
-          } else if (sessionId && !this.transports[sessionId]) {
-            errorMessage = 'Bad Request: Session not found or expired';
-          }
-          
-          res.status(400).json({
-            jsonrpc: '2.0',
-            error: {
-              code: -32000,
-              message: errorMessage
-            },
-            id: req.body?.id || null
-          });
-          return;
+        // Update session access time if session exists
+        if (this.singleSessionId && this.sessionMetadata[this.singleSessionId]) {
+          this.updateSessionAccess(this.singleSessionId);
         }
-        
+
         // Handle request with the transport
-        logger.info('handleRequest: Handling request with transport', { 
-          sessionId: isInitialize ? 'new' : sessionId,
-          isInitialize 
+        logger.info('[TRACE] About to call transport.handleRequest', {
+          sessionId: this.singleSessionId,
+          method: req.body?.method,
+          acceptHeader: req.headers.accept
         });
+
         await transport.handleRequest(req, res, req.body);
-        
+
         const duration = Date.now() - startTime;
         logger.info('MCP request completed', { duration, sessionId: transport.sessionId });
         
@@ -855,6 +732,28 @@ export class SingleSessionHTTPServer {
 
     // Mount Better-Auth OAuth provider (if enabled)
     if (process.env.ENABLE_OAUTH === 'true') {
+      // Debug middleware for OAuth requests - logs consent flow for investigation
+      app.use('/api/auth', (req, res, next) => {
+        const isConsentRelated = req.path.includes('consent') ||
+                                  req.path.includes('authorize') ||
+                                  req.path.includes('oauth2');
+
+        if (isConsentRelated) {
+          logger.info('[OAUTH DEBUG] OAuth request', {
+            path: req.path,
+            method: req.method,
+            query: req.query,
+            hasCookies: !!req.headers.cookie,
+            cookieNames: req.headers.cookie
+              ? req.headers.cookie.split(';').map(c => c.trim().split('=')[0])
+              : [],
+            contentType: req.headers['content-type'],
+            bodyKeys: req.body ? Object.keys(req.body) : []
+          });
+        }
+        next();
+      });
+
       // Express v5 requires *splat syntax for catch-all routes
       // See: https://www.better-auth.com/docs/integrations/express
       app.all('/api/auth/*splat', authHandler as any);
@@ -865,29 +764,65 @@ export class SingleSessionHTTPServer {
     if (process.env.ENABLE_OAUTH === 'true') {
       // OAuth Authorization Server Metadata (RFC 8414)
       // Required by Claude Desktop to discover authorization and token endpoints
-      app.get('/.well-known/oauth-authorization-server', async (req, res) => {
+      // Serves at both root and /api/auth paths per RFC 8414 (issuer-specific path)
+      const serveOAuthServerMetadata = async (req: express.Request, res: express.Response) => {
         try {
           const metadata = await (auth as any).api.getOAuthServerConfig();
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Cache-Control', 'public, max-age=3600');
           res.json(metadata);
-          logger.info('Served OAuth authorization server metadata');
+          logger.info('Served OAuth authorization server metadata', { path: req.path });
         } catch (error) {
           logger.error('Error generating OAuth authorization server metadata', error);
           res.status(500).json({ error: 'Internal server error' });
         }
-      });
+      };
+      app.get('/.well-known/oauth-authorization-server', serveOAuthServerMetadata);
+      // Per RFC 8414, when issuer is at /api/auth, metadata should be at this path
+      app.get('/.well-known/oauth-authorization-server/api/auth', serveOAuthServerMetadata);
 
       // OpenID Connect Discovery (OIDC)
-      app.get('/.well-known/openid-configuration', async (req, res) => {
+      // Serves at multiple paths for compatibility with different clients
+      const serveOpenIdConfig = async (req: express.Request, res: express.Response) => {
         try {
           const metadata = await (auth as any).api.getOpenIdConfig();
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Cache-Control', 'public, max-age=3600');
           res.json(metadata);
-          logger.info('Served OpenID Connect configuration metadata');
+          logger.info('Served OpenID Connect configuration metadata', { path: req.path });
         } catch (error) {
           logger.error('Error generating OpenID Connect metadata', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      };
+      app.get('/.well-known/openid-configuration', serveOpenIdConfig);
+      // Per OIDC Discovery spec, when issuer is at /api/auth, config should be at this path
+      app.get('/.well-known/openid-configuration/api/auth', serveOpenIdConfig);
+      app.get('/api/auth/.well-known/openid-configuration', serveOpenIdConfig);
+
+      // MCP-specific Protected Resource Metadata
+      // This tells Claude.ai where the actual MCP endpoint is located
+      app.get('/.well-known/oauth-protected-resource/mcp', (req, res) => {
+        try {
+          const baseUrl = process.env.BETTER_AUTH_URL || `http://${req.get('host')}`;
+          const issuerUrl = `${baseUrl}/api/auth`;
+          const mcpEndpointUrl = `${baseUrl}/mcp`;
+
+          logger.info('Served MCP-specific OAuth protected resource metadata', {
+            mcpEndpoint: mcpEndpointUrl
+          });
+
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          res.json({
+            resource: mcpEndpointUrl,
+            authorization_servers: [issuerUrl],
+            bearer_methods_supported: ["header"],
+            scopes_supported: ["mcp:read", "mcp:write", "openid", "profile", "email"],
+            resource_types_supported: ["mcp_server"]
+          });
+        } catch (error) {
+          logger.error('Error generating MCP resource metadata', error);
           res.status(500).json({ error: 'Internal server error' });
         }
       });
@@ -896,15 +831,21 @@ export class SingleSessionHTTPServer {
       app.get('/.well-known/oauth-protected-resource', (req, res) => {
         try {
           const baseUrl = process.env.BETTER_AUTH_URL || `http://${req.get('host')}`;
-          const issuerUrl = `${baseUrl}/api/auth`;  // Better Auth issuer includes /api/auth path
+          const mcpEndpoint = `${baseUrl}/mcp`;     // MCP endpoint where protected resource lives
+
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Cache-Control', 'public, max-age=3600');
           res.json({
-            resource: issuerUrl,               // Use issuer URL to match Better Auth
-            authorization_servers: [issuerUrl], // Point to the auth server issuer
+            resource: mcpEndpoint,           // Point to MCP endpoint (the protected resource)
+            authorization_servers: [`${baseUrl}/api/auth`], // Point to base URL (OAuth discovery will find endpoints)
             bearer_methods_supported: ["header"],
             scopes_supported: ["mcp:read", "mcp:write", "openid", "profile", "email"],
             resource_types_supported: ["mcp_server"]
+          });
+
+          logger.info('Served OAuth protected resource metadata', {
+            resource: mcpEndpoint,
+            authServer: baseUrl
           });
         } catch (error) {
           logger.error('Error generating resource metadata', error);
@@ -913,6 +854,326 @@ export class SingleSessionHTTPServer {
       });
 
       logger.info('OAuth discovery endpoints enabled at /.well-known/*');
+    }
+
+    // Debug endpoint to inspect OAuth consent records (protected by AUTH_TOKEN)
+    // Used to diagnose why consent is being requested repeatedly
+    if (process.env.ENABLE_OAUTH === 'true') {
+      app.get('/debug/consent/:clientId', async (req, res) => {
+        // Verify admin auth token
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith('Bearer ')) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        const token = authHeader.slice(7).trim();
+        const isValidToken = this.authToken &&
+          AuthManager.timingSafeCompare(token, this.authToken);
+
+        if (!isValidToken) {
+          logger.warn('Debug consent endpoint: Invalid token', { ip: req.ip });
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        try {
+          const dbPath = path.join(process.cwd(), 'data', 'auth.db');
+          const db = new Database(dbPath, { readonly: true });
+
+          // Get consent records for this client
+          const consents = db.prepare(`
+            SELECT * FROM oauthConsent WHERE clientId = ?
+          `).all(req.params.clientId);
+
+          // Get the client record to check skipConsent setting
+          const client = db.prepare(`
+            SELECT * FROM oauthClient WHERE clientId = ?
+          `).get(req.params.clientId) as { secret?: string; skipConsent?: number | boolean; [key: string]: any } | undefined;
+
+          // Get table schema to understand column types
+          const consentSchema = db.prepare(`
+            PRAGMA table_info(oauthConsent)
+          `).all();
+
+          const clientSchema = db.prepare(`
+            PRAGMA table_info(oauthClient)
+          `).all();
+
+          db.close();
+
+          logger.info('[OAUTH DEBUG] Consent lookup', {
+            clientId: req.params.clientId,
+            consentCount: consents.length,
+            hasClient: !!client
+          });
+
+          res.json({
+            clientId: req.params.clientId,
+            consents: consents.map((c: any) => ({
+              ...c,
+              // Show type information for debugging
+              scopesType: typeof c.scopes,
+              scopesIsArray: Array.isArray(c.scopes),
+              scopesValue: c.scopes
+            })),
+            client: client ? {
+              ...client,
+              // Mask sensitive data
+              secret: client.secret ? '[REDACTED]' : null,
+              skipConsent: client.skipConsent,
+              skipConsentType: typeof client.skipConsent
+            } : null,
+            schema: {
+              oauthConsent: consentSchema,
+              oauthClient: clientSchema
+            },
+            analysis: {
+              consentRecordExists: consents.length > 0,
+              clientExists: !!client,
+              skipConsentEnabled: client?.skipConsent === 1 || client?.skipConsent === true
+            }
+          });
+        } catch (error: any) {
+          logger.error('Debug consent endpoint error', error);
+          res.status(500).json({
+            error: error.message || 'Database query failed'
+          });
+        }
+      });
+
+      // Debug endpoint to list all OAuth clients
+      app.get('/debug/clients', async (req, res) => {
+        // Verify admin auth token
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith('Bearer ')) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        const token = authHeader.slice(7).trim();
+        const isValidToken = this.authToken &&
+          AuthManager.timingSafeCompare(token, this.authToken);
+
+        if (!isValidToken) {
+          logger.warn('Debug clients endpoint: Invalid token', { ip: req.ip });
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        try {
+          const dbPath = path.join(process.cwd(), 'data', 'auth.db');
+          const db = new Database(dbPath, { readonly: true });
+
+          const clients = db.prepare(`
+            SELECT clientId, name, redirectURLs, skipConsent, type, createdAt, updatedAt
+            FROM oauthClient
+          `).all();
+
+          db.close();
+
+          res.json({
+            count: clients.length,
+            clients: clients.map((c: any) => ({
+              ...c,
+              skipConsentType: typeof c.skipConsent,
+              skipConsentValue: c.skipConsent
+            }))
+          });
+        } catch (error: any) {
+          logger.error('Debug clients endpoint error', error);
+          res.status(500).json({
+            error: error.message || 'Database query failed'
+          });
+        }
+      });
+
+      // Debug endpoint to enable skipConsent for a client
+      app.post('/debug/consent/:clientId/skip', jsonParser, async (req, res) => {
+        // Verify admin auth token
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith('Bearer ')) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        const token = authHeader.slice(7).trim();
+        const isValidToken = this.authToken &&
+          AuthManager.timingSafeCompare(token, this.authToken);
+
+        if (!isValidToken) {
+          logger.warn('Debug skip consent endpoint: Invalid token', { ip: req.ip });
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        try {
+          const dbPath = path.join(process.cwd(), 'data', 'auth.db');
+          const db = new Database(dbPath);
+
+          // Update the client to skip consent
+          const result = db.prepare(`
+            UPDATE oauthClient SET skipConsent = 1 WHERE clientId = ?
+          `).run(req.params.clientId);
+
+          // Verify the update
+          const client = db.prepare(`
+            SELECT clientId, name, skipConsent FROM oauthClient WHERE clientId = ?
+          `).get(req.params.clientId);
+
+          db.close();
+
+          logger.info('[OAUTH DEBUG] Enabled skipConsent for client', {
+            clientId: req.params.clientId,
+            changes: result.changes
+          });
+
+          res.json({
+            success: result.changes > 0,
+            clientId: req.params.clientId,
+            changes: result.changes,
+            client: client
+          });
+        } catch (error: any) {
+          logger.error('Debug skip consent endpoint error', error);
+          res.status(500).json({
+            error: error.message || 'Database update failed'
+          });
+        }
+      });
+
+      // Debug endpoint to list OAuth access tokens (masked)
+      app.get('/debug/tokens', async (req, res) => {
+        // Verify admin auth token
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith('Bearer ')) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        const token = authHeader.slice(7).trim();
+        const isValidToken = this.authToken &&
+          AuthManager.timingSafeCompare(token, this.authToken);
+
+        if (!isValidToken) {
+          logger.warn('Debug tokens endpoint: Invalid token', { ip: req.ip });
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        try {
+          const dbPath = path.join(process.cwd(), 'data', 'auth.db');
+          const db = new Database(dbPath, { readonly: true });
+
+          const tokens = db.prepare(`
+            SELECT
+              id,
+              substr(token, 1, 8) || '...' as tokenPreview,
+              clientId,
+              userId,
+              scopes,
+              expiresAt,
+              createdAt
+            FROM oauthAccessToken
+            ORDER BY createdAt DESC
+            LIMIT 20
+          `).all();
+
+          const refreshTokens = db.prepare(`
+            SELECT
+              id,
+              substr(token, 1, 8) || '...' as tokenPreview,
+              clientId,
+              userId,
+              expiresAt,
+              createdAt
+            FROM oauthRefreshToken
+            ORDER BY createdAt DESC
+            LIMIT 20
+          `).all();
+
+          db.close();
+
+          res.json({
+            accessTokens: {
+              count: tokens.length,
+              tokens: tokens.map((t: any) => ({
+                ...t,
+                isExpired: new Date(t.expiresAt) < new Date()
+              }))
+            },
+            refreshTokens: {
+              count: refreshTokens.length,
+              tokens: refreshTokens.map((t: any) => ({
+                ...t,
+                isExpired: new Date(t.expiresAt) < new Date()
+              }))
+            }
+          });
+        } catch (error: any) {
+          logger.error('Debug tokens endpoint error', error);
+          res.status(500).json({
+            error: error.message || 'Database query failed'
+          });
+        }
+      });
+
+      // Debug endpoint to check OAuth authorization codes
+      app.get('/debug/auth-codes', async (req, res) => {
+        // Verify admin auth token
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith('Bearer ')) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        const token = authHeader.slice(7).trim();
+        const isValidToken = this.authToken &&
+          AuthManager.timingSafeCompare(token, this.authToken);
+
+        if (!isValidToken) {
+          logger.warn('Debug auth-codes endpoint: Invalid token', { ip: req.ip });
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+
+        try {
+          const dbPath = path.join(process.cwd(), 'data', 'auth.db');
+          const db = new Database(dbPath, { readonly: true });
+
+          const codes = db.prepare(`
+            SELECT
+              id,
+              substr(code, 1, 8) || '...' as codePreview,
+              clientId,
+              userId,
+              scopes,
+              redirectUri,
+              expiresAt,
+              createdAt
+            FROM oauthAuthorizationCode
+            ORDER BY createdAt DESC
+            LIMIT 20
+          `).all();
+
+          db.close();
+
+          res.json({
+            count: codes.length,
+            codes: codes.map((c: any) => ({
+              ...c,
+              isExpired: new Date(c.expiresAt) < new Date()
+            }))
+          });
+        } catch (error: any) {
+          logger.error('Debug auth-codes endpoint error', error);
+          res.status(500).json({
+            error: error.message || 'Database query failed'
+          });
+        }
+      });
+
+      logger.info('OAuth debug endpoints enabled at /debug/consent/:clientId, /debug/clients, /debug/consent/:clientId/skip, /debug/tokens, /debug/auth-codes');
     }
 
     // Admin endpoint to create users (protected by AUTH_TOKEN)
@@ -966,7 +1227,12 @@ export class SingleSessionHTTPServer {
         }
       });
     }
-
+    // Handle MCP at root (for Claude.ai compatibility)
+    app.post('/', (req, res, next) => {
+      // Forward to /mcp handler
+      req.url = '/mcp';
+      next('route');
+    });
     // Root endpoint with API information
     app.get('/', (req, res) => {
       const port = parseInt(process.env.PORT || '3000');
@@ -1266,8 +1532,9 @@ export class SingleSessionHTTPServer {
 
     // Main MCP endpoint with authentication and rate limiting
     app.post('/mcp', authLimiter, jsonParser, async (req: express.Request, res: express.Response): Promise<void> => {
-      // Log comprehensive debug info about the request
-      logger.info('POST /mcp request received - DETAILED DEBUG', {
+      try {
+        // Log comprehensive debug info about the request
+        logger.info('POST /mcp request received - DETAILED DEBUG', {
         headers: req.headers,
         readable: req.readable,
         readableEnded: req.readableEnded,
@@ -1282,7 +1549,13 @@ export class SingleSessionHTTPServer {
         url: req.url,
         originalUrl: req.originalUrl
       });
-      
+
+      // All requests require authentication (simplified single session mode)
+      logger.debug('MCP request received', {
+        method: req.body?.method,
+        hasAuthHeader: !!req.headers.authorization
+      });
+
       // Handle connection close to immediately clean up sessions
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       // Only add event listener if the request object supports it (not in test mocks)
@@ -1313,11 +1586,16 @@ export class SingleSessionHTTPServer {
           req.removeListener('close', closeHandler);
         });
       }
-      
+
+      // Initialize auth variables
+      let authenticated = false;
+      let authMethod = 'none';
+
+      // All requests require authentication (simplified single session mode)
       // Dual authentication: try OAuth first, fallback to bearer token
       const authHeader = req.headers.authorization;
 
-      if (!authHeader) {
+        if (!authHeader) {
         logger.warn('Authentication failed: Missing Authorization header', {
           ip: req.ip,
           reason: 'no_auth_header'
@@ -1329,9 +1607,6 @@ export class SingleSessionHTTPServer {
         });
         return;
       }
-
-      let authenticated = false;
-      let authMethod = 'none';
 
       // Try OAuth token verification if enabled
       if (process.env.ENABLE_OAUTH === 'true' && authHeader.startsWith('Bearer ')) {
@@ -1403,11 +1678,14 @@ export class SingleSessionHTTPServer {
         req.headers['mcp-session-id'] = oauthSessionId;
       }
 
+      logger.debug('Request authenticated', { method: authMethod });
+
       // Handle request with single session
-      logger.info('Authentication successful - proceeding to handleRequest', {
-        hasSession: !!this.session,
-        sessionType: this.session?.isSSE ? 'SSE' : 'StreamableHTTP',
-        sessionInitialized: this.session?.initialized
+      logger.info('Proceeding to handleRequest', {
+        authenticated: true,
+        authMethod,
+        hasSession: !!this.singleTransport,
+        sessionId: this.singleSessionId
       });
 
       // Extract instance context from headers if present (for multi-tenant support)
@@ -1461,13 +1739,73 @@ export class SingleSessionHTTPServer {
         });
       }
 
+      // Normalize Accept header for MCP SDK compatibility
+      // The SDK requires both application/json AND text/event-stream in the Accept header
+      // Claude.ai sends Accept: */* which doesn't match the SDK's literal string checks
+      // We need to modify both req.headers AND the underlying rawHeaders array
+      // because @hono/node-server's getRequestListener reads from the raw IncomingMessage
+      const originalAccept = req.headers.accept;
+      if (originalAccept === '*/*' || !originalAccept) {
+        const newAcceptValue = 'application/json, text/event-stream';
+
+        // Modify the parsed headers object
+        req.headers.accept = newAcceptValue;
+
+        // CRITICAL: Also modify the rawHeaders array that the SDK reads from
+        // rawHeaders is an array like ['Accept', '*/*', 'Content-Type', 'application/json', ...]
+        const rawHeaders = (req as any).rawHeaders;
+        if (Array.isArray(rawHeaders)) {
+          const acceptIndex = rawHeaders.findIndex((h, i) =>
+            i % 2 === 0 && h.toLowerCase() === 'accept'
+          );
+          if (acceptIndex !== -1) {
+            rawHeaders[acceptIndex + 1] = newAcceptValue;
+            logger.info('Normalized Accept header in rawHeaders', {
+              original: originalAccept,
+              normalized: newAcceptValue,
+              index: acceptIndex
+            });
+          }
+        }
+
+        logger.info('Normalized Accept header for SDK compatibility', {
+          original: originalAccept,
+          normalized: req.headers.accept
+        });
+      }
+
+      logger.debug('About to call handleRequest', {
+        hasInstanceContext: !!instanceContext,
+        requestBody: req.body,
+        sessionId: req.headers['mcp-session-id'],
+        acceptHeader: req.headers.accept
+      });
+
       await this.handleRequest(req, res, instanceContext);
-      
+
       logger.info('POST /mcp request completed - checking response status', {
         responseHeadersSent: res.headersSent,
         responseStatusCode: res.statusCode,
-        responseFinished: res.finished
+        responseFinished: res.finished,
       });
+      } catch (error) {
+        logger.error('POST /mcp handler error', {
+          error: error instanceof Error ? error.message : error,
+          stack: error instanceof Error ? error.stack : undefined,
+          method: req.body?.method
+        });
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32603,
+              message: 'Internal server error',
+              data: { code: 'INTERNAL_ERROR' }
+            },
+            id: req.body?.id || null
+          });
+        }
+      }
     });
     
     // 404 handler

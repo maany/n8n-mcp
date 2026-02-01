@@ -13,7 +13,7 @@ COPY tsconfig*.json ./
 RUN --mount=type=cache,target=/root/.npm \
     echo '{}' > package.json && \
     npm install --no-save --legacy-peer-deps typescript@^5.8.3 @types/node@^22.15.30 @types/express@^5.0.3 \
-        @modelcontextprotocol/sdk@1.20.1 dotenv@^16.5.0 express@^5.1.0 axios@^1.10.0 \
+        @modelcontextprotocol/sdk@^1.25.1 dotenv@^16.5.0 express@^5.1.0 axios@^1.10.0 \
         n8n-workflow@^2.4.2 uuid@^11.0.5 @types/uuid@^10.0.0 \
         openai@^4.77.0 zod@3.24.1 lru-cache@^11.2.1 @supabase/supabase-js@^2.57.4 \
         better-auth@^1.4.18 @better-auth/oauth-provider@^1.4.18 better-sqlite3@^11.10.0 @types/better-sqlite3@^7.6.12
@@ -36,6 +36,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 # Copy entire dist folder (rebuild script needs loaders, parsers, mappers, services, etc.)
 COPY --from=builder /app/dist ./dist
+COPY src/database/schema.sql ./src/database/
 COPY src/database/schema-optimized.sql ./src/database/
 
 # Generate nodes.db from installed n8n packages
@@ -68,7 +69,8 @@ COPY --chown=nodejs:nodejs --from=builder /app/dist ./dist
 
 # Copy pre-built nodes.db from database builder stage
 # This database (~70MB) is generated from n8n packages at build time
-COPY --chown=nodejs:nodejs --from=db-builder /app/data/nodes.db ./data/nodes.db
+# Store as template for fresh installs (volume mounts may override /app/data)
+COPY --chown=nodejs:nodejs --from=db-builder /app/data/nodes.db ./data-template/nodes.db
 
 # Copy database schema
 COPY --chown=nodejs:nodejs src/database/schema-optimized.sql ./src/database/

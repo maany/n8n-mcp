@@ -102,58 +102,111 @@ if [ "$ENABLE_OAUTH" = "true" ]; then
     fi
 fi
 
+# Database validation helper function
+validate_database() {
+    local db_path="$1"
+    # Simple validation: check if nodes table exists using sqlite3 or node
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$db_path" "SELECT COUNT(*) FROM nodes LIMIT 1;" >/dev/null 2>&1
+        return $?
+    else
+        # Fallback: check file size (pre-built DB should be ~70MB)
+        if [ -f "$db_path" ]; then
+            db_size=$(stat -c%s "$db_path" 2>/dev/null || stat -f%z "$db_path" 2>/dev/null || echo "0")
+            # If less than 1MB, it's likely corrupted or empty
+            if [ "$db_size" -lt 1048576 ]; then
+                return 1
+            fi
+        fi
+        return 0
+    fi
+}
+
 # Database initialization with file locking to prevent race conditions
+DB_NEEDS_INIT=0
 if [ ! -f "$DB_PATH" ]; then
-    log_message "Database not found at $DB_PATH. Initializing..."
-    
+    log_message "Database not found at $DB_PATH"
+    DB_NEEDS_INIT=1
+elif ! validate_database "$DB_PATH"; then
+    log_message "Database at $DB_PATH is invalid or corrupted"
+    DB_NEEDS_INIT=1
+fi
+
+if [ "$DB_NEEDS_INIT" = "1" ]; then
     # Ensure lock directory exists before attempting to create lock
     mkdir -p "$DB_DIR"
-    
+
     # Check if flock is available
     if command -v flock >/dev/null 2>&1; then
         # Use a lock file to prevent multiple containers from initializing simultaneously
-        # Try to create lock file, handle permission errors gracefully
         LOCK_FILE="$DB_DIR/.db.lock"
-        
+
         # Ensure we can create the lock file - fix permissions if running as root
         if [ "$(id -u)" = "0" ] && [ ! -w "$DB_DIR" ]; then
             chown nodejs:nodejs "$DB_DIR" 2>/dev/null || true
             chmod 755 "$DB_DIR" 2>/dev/null || true
         fi
-        
+
         # Try to create lock file with proper error handling
         if touch "$LOCK_FILE" 2>/dev/null; then
             (
                 flock -x 200
                 # Double-check inside the lock
-                if [ ! -f "$DB_PATH" ]; then
-                    log_message "Initializing database at $DB_PATH..."
+                if [ ! -f "$DB_PATH" ] || ! validate_database "$DB_PATH"; then
+                    # Try to copy from pre-built template first (fast)
+                    if [ -f "/app/data-template/nodes.db" ]; then
+                        log_message "Copying pre-built database from template..."
+                        cp /app/data-template/nodes.db "$DB_PATH" || {
+                            log_message "ERROR: Failed to copy database template" >&2
+                            exit 1
+                        }
+                        log_message "Database initialized from template successfully"
+                    else
+                        # Fallback to rebuild (slow, ~2 minutes)
+                        log_message "Template not found, rebuilding database (this may take 2-3 minutes)..."
+                        cd /app && NODE_DB_PATH="$DB_PATH" node dist/scripts/rebuild.js || {
+                            log_message "ERROR: Database initialization failed" >&2
+                            exit 1
+                        }
+                    fi
+                fi
+            ) 200>"$LOCK_FILE"
+        else
+            log_message "WARNING: Cannot create lock file, proceeding without file locking"
+            # Fallback without locking
+            if [ ! -f "$DB_PATH" ] || ! validate_database "$DB_PATH"; then
+                if [ -f "/app/data-template/nodes.db" ]; then
+                    log_message "Copying pre-built database from template..."
+                    cp /app/data-template/nodes.db "$DB_PATH" || {
+                        log_message "ERROR: Failed to copy database template" >&2
+                        exit 1
+                    }
+                else
+                    log_message "Template not found, rebuilding database..."
                     cd /app && NODE_DB_PATH="$DB_PATH" node dist/scripts/rebuild.js || {
                         log_message "ERROR: Database initialization failed" >&2
                         exit 1
                     }
                 fi
-            ) 200>"$LOCK_FILE"
-        else
-            log_message "WARNING: Cannot create lock file at $LOCK_FILE, proceeding without file locking"
-            # Fallback without locking if we can't create the lock file
-            if [ ! -f "$DB_PATH" ]; then
-                log_message "Initializing database at $DB_PATH..."
-                cd /app && NODE_DB_PATH="$DB_PATH" node dist/scripts/rebuild.js || {
-                    log_message "ERROR: Database initialization failed" >&2
-                    exit 1
-                }
             fi
         fi
     else
         # Fallback without locking (log warning)
         log_message "WARNING: flock not available, database initialization may have race conditions"
-        if [ ! -f "$DB_PATH" ]; then
-            log_message "Initializing database at $DB_PATH..."
-            cd /app && NODE_DB_PATH="$DB_PATH" node dist/scripts/rebuild.js || {
-                log_message "ERROR: Database initialization failed" >&2
-                exit 1
-            }
+        if [ ! -f "$DB_PATH" ] || ! validate_database "$DB_PATH"; then
+            if [ -f "/app/data-template/nodes.db" ]; then
+                log_message "Copying pre-built database from template..."
+                cp /app/data-template/nodes.db "$DB_PATH" || {
+                    log_message "ERROR: Failed to copy database template" >&2
+                    exit 1
+                }
+            else
+                log_message "Template not found, rebuilding database..."
+                cd /app && NODE_DB_PATH="$DB_PATH" node dist/scripts/rebuild.js || {
+                    log_message "ERROR: Database initialization failed" >&2
+                    exit 1
+                }
+            fi
         fi
     fi
 fi

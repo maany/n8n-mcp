@@ -21,6 +21,13 @@ export class Logger {
   private readonly isDisabled = process.env.DISABLE_CONSOLE_OUTPUT === 'true';
   private readonly isHttp = process.env.MCP_MODE === 'http';
   private readonly isTest = process.env.NODE_ENV === 'test' || process.env.TEST_ENVIRONMENT === 'true';
+  // Save original console methods before ConsoleManager silences them
+  private readonly originalConsole = {
+    log: console.log.bind(console),
+    error: console.error.bind(console),
+    warn: console.warn.bind(console),
+    info: console.info.bind(console)
+  };
 
   constructor(config?: Partial<LoggerConfig>) {
     this.config = {
@@ -79,15 +86,16 @@ export class Logger {
         return;
       }
       
+      // Use original console methods to bypass ConsoleManager silencing
       switch (level) {
         case LogLevel.ERROR:
-          console.error(formattedMessage, ...args);
+          this.originalConsole.error(formattedMessage, ...args);
           break;
         case LogLevel.WARN:
-          console.warn(formattedMessage, ...args);
+          this.originalConsole.warn(formattedMessage, ...args);
           break;
         default:
-          console.log(formattedMessage, ...args);
+          this.originalConsole.log(formattedMessage, ...args);
       }
     }
   }

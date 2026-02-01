@@ -20,7 +20,7 @@ export interface ProtocolNegotiationResult {
 /**
  * Standard MCP protocol version (latest)
  */
-export const STANDARD_PROTOCOL_VERSION = '2025-03-26';
+export const STANDARD_PROTOCOL_VERSION = '2025-11-25';
 
 /**
  * n8n specific protocol version (what n8n expects)
@@ -32,6 +32,7 @@ export const N8N_PROTOCOL_VERSION = '2024-11-05';
  */
 export const SUPPORTED_VERSIONS = [
   STANDARD_PROTOCOL_VERSION,
+  '2025-03-26', // Previous standard version
   N8N_PROTOCOL_VERSION,
   '2024-06-25', // Older fallback
 ];
