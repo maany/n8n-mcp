@@ -413,7 +413,7 @@ export async function handleUpdatePartialWorkflow(
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
 

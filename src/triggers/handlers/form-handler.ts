@@ -26,9 +26,9 @@ import { BaseTriggerHandler } from './base-handler';
 const formInputSchema = z.object({
   workflowId: z.string(),
   triggerType: z.literal('form'),
-  formData: z.record(z.unknown()).optional(),
-  data: z.record(z.unknown()).optional(),
-  headers: z.record(z.string()).optional(),
+  formData: z.record(z.string(), z.unknown()).optional(),
+  data: z.record(z.string(), z.unknown()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   timeout: z.number().optional(),
   waitForResponse: z.boolean().optional(),
 });

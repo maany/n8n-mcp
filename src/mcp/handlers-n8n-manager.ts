@@ -372,7 +372,7 @@ function ensureApiConfigured(context?: InstanceContext): N8nApiClient {
 const createWorkflowSchema = z.object({
   name: z.string(),
   nodes: z.array(z.any()),
-  connections: z.record(z.any()),
+  connections: z.record(z.string(), z.any()),
   settings: z.object({
     executionOrder: z.enum(['v0', 'v1']).optional(),
     timezone: z.string().optional(),
@@ -389,7 +389,7 @@ const updateWorkflowSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
   nodes: z.array(z.any()).optional(),
-  connections: z.record(z.any()).optional(),
+  connections: z.record(z.string(), z.any()).optional(),
   settings: z.any().optional(),
   createBackup: z.boolean().optional(),
   intent: z.string().optional(),
@@ -438,8 +438,8 @@ const testWorkflowSchema = z.object({
   webhookPath: z.string().optional(),
   message: z.string().optional(),
   sessionId: z.string().optional(),
-  data: z.record(z.unknown()).optional(),
-  headers: z.record(z.string()).optional(),
+  data: z.record(z.string(), z.unknown()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   timeout: z.number().optional(),
   waitForResponse: z.boolean().optional(),
 });
@@ -531,7 +531,7 @@ export async function handleCreateWorkflow(args: unknown, context?: InstanceCont
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -567,7 +567,7 @@ export async function handleGetWorkflow(args: unknown, context?: InstanceContext
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -621,7 +621,7 @@ export async function handleGetWorkflowDetails(args: unknown, context?: Instance
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -674,7 +674,7 @@ export async function handleGetWorkflowStructure(args: unknown, context?: Instan
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -717,7 +717,7 @@ export async function handleGetWorkflowMinimal(args: unknown, context?: Instance
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -848,7 +848,7 @@ export async function handleUpdateWorkflow(
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
 
@@ -902,7 +902,7 @@ export async function handleDeleteWorkflow(args: unknown, context?: InstanceCont
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -969,7 +969,7 @@ export async function handleListWorkflows(args: unknown, context?: InstanceConte
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -1065,7 +1065,7 @@ export async function handleValidateWorkflow(
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -1235,7 +1235,7 @@ export async function handleAutofixWorkflow(
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
 
@@ -1394,7 +1394,7 @@ export async function handleTestWorkflow(args: unknown, context?: InstanceContex
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors },
+        details: { errors: error.issues },
       };
     }
 
@@ -1523,7 +1523,7 @@ export async function handleGetExecution(args: unknown, context?: InstanceContex
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
 
@@ -1573,7 +1573,7 @@ export async function handleListExecutions(args: unknown, context?: InstanceCont
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -1608,7 +1608,7 @@ export async function handleDeleteExecution(args: unknown, context?: InstanceCon
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -2348,7 +2348,7 @@ export async function handleWorkflowVersions(
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
 
@@ -2571,7 +2571,7 @@ export async function handleDeployTemplate(
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
 
@@ -2601,8 +2601,8 @@ export async function handleTriggerWebhookWorkflow(args: unknown, context?: Inst
   const triggerWebhookSchema = z.object({
     webhookUrl: z.string().url(),
     httpMethod: z.enum(['GET', 'POST', 'PUT', 'DELETE']).optional(),
-    data: z.record(z.unknown()).optional(),
-    headers: z.record(z.string()).optional(),
+    data: z.record(z.string(), z.unknown()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
     waitForResponse: z.boolean().optional(),
   });
 
@@ -2630,7 +2630,7 @@ export async function handleTriggerWebhookWorkflow(args: unknown, context?: Inst
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
 

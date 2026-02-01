@@ -19,7 +19,7 @@ const sanitizedString = z.string().transform(val => {
 });
 
 // Schema for generic event properties
-const eventPropertiesSchema = z.record(z.unknown()).transform(obj => {
+const eventPropertiesSchema = z.record(z.string(), z.unknown()).transform(obj => {
   const sanitized: Record<string, any> = {};
 
   for (const [key, value] of Object.entries(obj)) {
@@ -63,7 +63,7 @@ export const workflowTelemetrySchema = z.object({
   complexity: z.enum(['simple', 'medium', 'complex']),
   sanitized_workflow: z.object({
     nodes: z.array(z.any()).max(1000),
-    connections: z.record(z.any())
+    connections: z.record(z.string(), z.any())
   }),
   created_at: z.string().datetime().optional()
 });
@@ -93,7 +93,7 @@ const validationDetailsPropertiesSchema = z.object({
   nodeType: z.string().max(100),
   errorType: z.string().max(100),
   errorCategory: z.string().max(50),
-  details: z.record(z.any()).optional()
+  details: z.record(z.string(), z.any()).optional()
 });
 
 const performanceMetricPropertiesSchema = z.object({
@@ -101,7 +101,7 @@ const performanceMetricPropertiesSchema = z.object({
   duration: z.number().min(0).max(3600000),
   isSlow: z.boolean(),
   isVerySlow: z.boolean(),
-  metadata: z.record(z.any()).optional()
+  metadata: z.record(z.string(), z.any()).optional()
 });
 
 // Schema for startup_error event properties (v2.18.2)
@@ -236,7 +236,7 @@ export class TelemetryEventValidator {
         // Validate properties with specific schema first
         const validatedProperties = specificSchema.safeParse(event.properties);
         if (!validatedProperties.success) {
-          logger.debug(`Event validation failed for ${event.event}:`, validatedProperties.error.errors);
+          logger.debug(`Event validation failed for ${event.event}:`, validatedProperties.error.issues);
           this.validationErrors++;
           return null;
         }
@@ -249,7 +249,7 @@ export class TelemetryEventValidator {
       return validated;
     } catch (error) {
       if (error instanceof z.ZodError) {
-        logger.debug('Event validation error:', error.errors);
+        logger.debug('Event validation error:', error.issues);
       } else {
         logger.debug('Unexpected validation error:', error);
       }
@@ -268,7 +268,7 @@ export class TelemetryEventValidator {
       return validated;
     } catch (error) {
       if (error instanceof z.ZodError) {
-        logger.debug('Workflow validation error:', error.errors);
+        logger.debug('Workflow validation error:', error.issues);
       } else {
         logger.debug('Unexpected workflow validation error:', error);
       }

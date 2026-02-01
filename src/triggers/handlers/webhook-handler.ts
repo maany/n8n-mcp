@@ -27,8 +27,8 @@ const webhookInputSchema = z.object({
   triggerType: z.literal('webhook'),
   httpMethod: z.enum(['GET', 'POST', 'PUT', 'DELETE']).optional(),
   webhookPath: z.string().optional(),
-  data: z.record(z.unknown()).optional(),
-  headers: z.record(z.string()).optional(),
+  data: z.record(z.string(), z.unknown()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   timeout: z.number().optional(),
   waitForResponse: z.boolean().optional(),
 });
