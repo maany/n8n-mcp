@@ -2,10 +2,16 @@ import crypto from 'crypto';
 import path from 'path';
 import { betterAuth } from "better-auth";
 import Database from "better-sqlite3";
+import { jwtVerify, createRemoteJWKSet } from 'jose';
 
 import { jwt } from "better-auth/plugins";
 import { oauthProvider } from "@better-auth/oauth-provider";
 import { toNodeHandler } from "better-auth/node";
+
+// Build valid audiences and protected resources based on BETTER_AUTH_URL
+const baseAuthUrl = process.env.BETTER_AUTH_URL || 'http://localhost:3000';
+const validAudiences = [baseAuthUrl, `${baseAuthUrl}/mcp`];
+const protectedResources = [baseAuthUrl, `${baseAuthUrl}/mcp`];
 
 // Only configure OAuth when enabled
 const authConfig = process.env.ENABLE_OAUTH === 'true' ? {
@@ -36,10 +42,8 @@ const authConfig = process.env.ENABLE_OAUTH === 'true' ? {
             ],
             accessTokenExpiresIn: 3600,
             refreshTokenExpiresIn: 2592000,
-            validAudiences: [
-                process.env.BETTER_AUTH_URL || "http://localhost:3000",
-                `${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/api/auth`
-            ],
+            validAudiences,
+            protectedResources,
             storeClientSecret: "hashed",
             disableJwtPlugin: false
         })
@@ -62,7 +66,19 @@ export const auth = betterAuth(authConfig) as ReturnType<typeof betterAuth>;
 export const authHandler = toNodeHandler(auth);
 
 /**
- * Verify OAuth access token by checking the database
+ * Token verification result type
+ */
+type TokenVerificationResult = {
+    valid: boolean;
+    userId?: string;
+    scopes?: string[];
+};
+
+/**
+ * Verify OAuth access token using two-tier verification:
+ * 1. Database lookup for opaque tokens (stored by better-auth)
+ * 2. JWT signature verification for JWT tokens (ID tokens or JWT access tokens)
+ *
  * Returns { valid: false } when OAuth is disabled
  *
  * Note: We query the database directly instead of using the introspection endpoint
@@ -70,18 +86,29 @@ export const authHandler = toNodeHandler(auth);
  * Since we run both the auth server and resource server in the same process,
  * direct database access is more efficient and secure.
  */
-export async function verifyOAuthToken(token: string): Promise<{
-    valid: boolean;
-    userId?: string;
-    scopes?: string[];
-}> {
+export async function verifyOAuthToken(token: string): Promise<TokenVerificationResult> {
     if (process.env.ENABLE_OAUTH !== 'true') {
         return { valid: false };
     }
 
+    // Tier 1: Try database lookup for opaque tokens
+    const dbResult = await verifyOpaqueToken(token);
+    if (dbResult.valid) {
+        return dbResult;
+    }
+
+    // Tier 2: Try JWT verification as fallback
+    const jwtResult = await verifyJwtToken(token);
+    return jwtResult;
+}
+
+/**
+ * Verify opaque access token by checking the database
+ * Better-auth stores hashed tokens using SHA-256 with URL-safe base64 encoding
+ */
+async function verifyOpaqueToken(token: string): Promise<TokenVerificationResult> {
     try {
         // Hash the token to match the database storage
-        // Better-auth stores hashed tokens using SHA-256 with URL-safe base64 encoding
         const hashedToken = crypto.createHash('sha256')
             .update(token)
             .digest('base64')
@@ -132,7 +159,82 @@ export async function verifyOAuthToken(token: string): Promise<{
             scopes: scopes
         };
     } catch (error) {
-        console.error('OAuth token verification failed:', error);
+        console.error('Opaque token verification failed:', error);
+        return { valid: false };
+    }
+}
+
+/**
+ * Parse scope claim from JWT payload
+ * Handles both space-separated strings and JSON arrays
+ */
+function parseScopes(scopeClaim: unknown): string[] {
+    if (!scopeClaim) {
+        return [];
+    }
+
+    if (Array.isArray(scopeClaim)) {
+        return scopeClaim.filter((s): s is string => typeof s === 'string');
+    }
+
+    if (typeof scopeClaim === 'string') {
+        return scopeClaim.split(' ').filter(s => s.length > 0);
+    }
+
+    return [];
+}
+
+/**
+ * Verify JWT token by validating signature against JWKS
+ * Supports both JWT access tokens and ID tokens from better-auth
+ */
+async function verifyJwtToken(token: string): Promise<TokenVerificationResult> {
+    // Check if token looks like a JWT (3 dot-separated parts)
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+        return { valid: false };
+    }
+
+    try {
+        // Fetch JWKS from better-auth endpoint
+        const jwksUrl = new URL(`${baseAuthUrl}/api/auth/jwks`);
+        const JWKS = createRemoteJWKSet(jwksUrl);
+
+        // Better-auth uses /api/auth as the issuer path
+        const issuer = `${baseAuthUrl}/api/auth`;
+
+        // Valid audiences include the MCP endpoint and userinfo endpoint
+        const audiences = [
+            ...validAudiences,
+            `${baseAuthUrl}/api/auth/oauth2/userinfo`
+        ];
+
+        // Verify signature, expiry, audience, and issuer
+        const { payload } = await jwtVerify(token, JWKS, {
+            audience: audiences,
+            issuer: issuer
+        });
+
+        // Extract userId from sub claim
+        if (!payload.sub) {
+            console.error('JWT verification failed: missing sub claim');
+            return { valid: false };
+        }
+
+        // Extract scopes from scope claim
+        const scopes = parseScopes(payload.scope);
+
+        return {
+            valid: true,
+            userId: payload.sub,
+            scopes: scopes
+        };
+    } catch (error) {
+        // Only log if debug-level logging is needed, as JWT failures are expected
+        // when opaque tokens fail and fallback is attempted
+        if (process.env.DEBUG_AUTH === 'true') {
+            console.error('JWT token verification failed:', error);
+        }
         return { valid: false };
     }
 }
