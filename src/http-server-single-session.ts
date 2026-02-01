@@ -502,6 +502,46 @@ export class SingleSessionHTTPServer {
   
 
   /**
+   * Reset the single session transport to allow re-initialization
+   * This is needed when a client reconnects and sends a new initialize request
+   */
+  private async resetSingleSession(): Promise<void> {
+    if (this.singleTransport) {
+      const sessionId = this.singleSessionId;
+      logger.info('Resetting single session for re-initialization', { sessionId });
+
+      // Close server first to free resources
+      if (this.singleServer && typeof this.singleServer.close === 'function') {
+        try {
+          await this.singleServer.close();
+        } catch (serverError) {
+          logger.warn('Error closing server during session reset', { sessionId, error: serverError });
+        }
+      }
+
+      // Close transport
+      try {
+        await this.singleTransport.close();
+      } catch (transportError) {
+        logger.warn('Error closing transport during session reset', { sessionId, error: transportError });
+      }
+
+      // Clear references
+      this.singleTransport = null;
+      this.singleServer = null;
+      if (sessionId) {
+        delete this.transports[sessionId];
+        delete this.servers[sessionId];
+        delete this.sessionMetadata[sessionId];
+        delete this.sessionContexts[sessionId];
+      }
+      this.singleSessionId = null;
+
+      logger.info('Single session reset complete');
+    }
+  }
+
+  /**
    * Handle incoming MCP request using proper SDK pattern
    *
    * @param req - Express request object
@@ -522,6 +562,13 @@ export class SingleSessionHTTPServer {
           acceptHeader: req.headers.accept,
           method: req.body?.method
         });
+
+        // If this is an initialize request and we already have a session, reset it
+        // This allows clients to reconnect without getting "Server already initialized" errors
+        if (req.body?.method === 'initialize' && this.singleTransport) {
+          logger.info('Received initialize request with existing session - resetting session');
+          await this.resetSingleSession();
+        }
 
         // Use the single session transport for all requests
         const transport = await this.getOrCreateSingleTransport(instanceContext);
