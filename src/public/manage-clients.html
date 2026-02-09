@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OIDC Client Management - n8n MCP</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="manage-body">
+  <div class="page-container">
+    <nav class="nav-bar">
+      <a href="/manage/clients" class="nav-link active">OIDC Clients</a>
+      <a href="/manage/instances" class="nav-link">n8n Instances</a>
+    </nav>
+
+    <div class="header">
+      <h1>OIDC Clients</h1>
+      <p class="subtitle">Manage OAuth 2.0 client applications</p>
+    </div>
+
+    <div id="error" class="error"></div>
+
+    <div class="toolbar">
+      <button id="btn-create" class="btn-primary btn-small" onclick="showCreateForm()">Create Client</button>
+    </div>
+
+    <table class="data-table" id="clients-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Client ID</th>
+          <th>Redirect URIs</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="clients-body">
+        <tr><td colspan="5" class="loading">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Create Client Modal -->
+    <div id="create-modal" class="modal-overlay" style="display:none">
+      <div class="modal">
+        <h2>Create OIDC Client</h2>
+        <div class="auth-form">
+          <div class="form-group">
+            <label for="client-name">Client Name</label>
+            <input type="text" id="client-name" placeholder="My Application">
+          </div>
+          <div class="form-group">
+            <label for="redirect-uris">Redirect URIs (one per line)</label>
+            <textarea id="redirect-uris" rows="3" placeholder="http://localhost:3000/callback"></textarea>
+          </div>
+          <div id="create-error" class="error"></div>
+          <div class="actions">
+            <button class="btn-secondary" onclick="hideCreateForm()">Cancel</button>
+            <button class="btn-primary" onclick="createClient()">Create</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Secret Display Modal -->
+    <div id="secret-modal" class="modal-overlay" style="display:none">
+      <div class="modal">
+        <h2>Client Created</h2>
+        <p>Save the client secret now. It will not be shown again.</p>
+        <div class="form-group">
+          <label>Client ID</label>
+          <div class="secret-display" id="new-client-id"></div>
+        </div>
+        <div class="form-group">
+          <label>Client Secret</label>
+          <div class="secret-display" id="new-client-secret"></div>
+        </div>
+        <div class="actions">
+          <button class="btn-primary" onclick="copySecret()">Copy Secret</button>
+          <button class="btn-secondary" onclick="hideSecretModal()">Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentUser = null;
+
+    async function checkSession() {
+      try {
+        const resp = await fetch('/api/auth/get-session', { credentials: 'include' });
+        if (!resp.ok) throw new Error('No session');
+        const data = await resp.json();
+        if (!data?.user?.id) throw new Error('No user');
+        currentUser = data.user;
+        loadClients();
+      } catch {
+        window.location.href = '/sign-in?redirect=/manage/clients';
+      }
+    }
+
+    async function loadClients() {
+      try {
+        const resp = await fetch('/api/manage/clients', { credentials: 'include' });
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          const detail = errData.detail || errData.error || resp.statusText;
+          throw new Error(detail);
+        }
+        const data = await resp.json();
+        renderClients(data.clients || []);
+      } catch (err) {
+        document.getElementById('clients-body').innerHTML =
+          '<tr><td colspan="5" class="empty">' + escapeHtml(err.message) + '</td></tr>';
+        showError(err.message);
+      }
+    }
+
+    function renderClients(clients) {
+      const tbody = document.getElementById('clients-body');
+      if (clients.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No clients registered</td></tr>';
+        return;
+      }
+      tbody.innerHTML = clients.map(c => {
+        const uris = (c.redirectURIs || c.redirectURLs || []);
+        const uriList = Array.isArray(uris) ? uris : (typeof uris === 'string' ? JSON.parse(uris) : []);
+        const created = c.createdAt ? new Date(c.createdAt).toLocaleDateString() : '-';
+        return `<tr>
+          <td>${escapeHtml(c.clientName || c.client_name || '-')}</td>
+          <td class="monospace">${escapeHtml(c.clientId || c.client_id || '-')}</td>
+          <td>${uriList.map(u => '<code>' + escapeHtml(u) + '</code>').join('<br>')}</td>
+          <td>${created}</td>
+          <td><button class="btn-danger btn-small" onclick="deleteClient('${escapeHtml(c.clientId || c.client_id)}')">Delete</button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function showCreateForm() {
+      document.getElementById('create-modal').style.display = 'flex';
+      document.getElementById('client-name').value = '';
+      document.getElementById('redirect-uris').value = '';
+      document.getElementById('create-error').textContent = '';
+    }
+
+    function hideCreateForm() {
+      document.getElementById('create-modal').style.display = 'none';
+    }
+
+    async function createClient() {
+      const name = document.getElementById('client-name').value.trim();
+      const urisText = document.getElementById('redirect-uris').value.trim();
+      const uris = urisText.split('\n').map(u => u.trim()).filter(u => u);
+
+      if (!name || uris.length === 0) {
+        document.getElementById('create-error').textContent = 'Name and at least one redirect URI required';
+        return;
+      }
+
+      try {
+        const resp = await fetch('/api/manage/clients', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ client_name: name, redirect_uris: uris }),
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Failed to create client');
+        }
+
+        const result = await resp.json();
+        hideCreateForm();
+
+        // Show secret
+        const clientId = result.client_id || result.clientId || '';
+        const clientSecret = result.client_secret || result.clientSecret || '';
+        document.getElementById('new-client-id').textContent = clientId;
+        document.getElementById('new-client-secret').textContent = clientSecret;
+        document.getElementById('secret-modal').style.display = 'flex';
+
+        loadClients();
+      } catch (err) {
+        document.getElementById('create-error').textContent = err.message;
+      }
+    }
+
+    function copySecret() {
+      const secret = document.getElementById('new-client-secret').textContent;
+      navigator.clipboard.writeText(secret).catch(() => {});
+    }
+
+    function hideSecretModal() {
+      document.getElementById('secret-modal').style.display = 'none';
+    }
+
+    async function deleteClient(clientId) {
+      if (!confirm('Delete this client? This cannot be undone.')) return;
+
+      try {
+        const resp = await fetch('/api/manage/clients/' + encodeURIComponent(clientId), {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Failed to delete client');
+        }
+        loadClients();
+      } catch (err) {
+        showError(err.message);
+      }
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error');
+      el.textContent = msg;
+      setTimeout(() => { el.textContent = ''; }, 5000);
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    checkSession();
+  </script>
+</body>
+</html>

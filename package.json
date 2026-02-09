@@ -15,8 +15,9 @@
     "n8n-mcp": "./dist/mcp/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && npm run copy:public",
+    "build": "tsc -p tsconfig.build.json && npm run copy:public && npm run copy:migrations",
     "copy:public": "mkdir -p dist/public && cp -r src/public/* dist/public/ 2>/dev/null || true",
+    "copy:migrations": "mkdir -p dist/database/migrations/auth && cp -r src/database/migrations/auth/*.sql dist/database/migrations/auth/ 2>/dev/null || true",
     "auth:migrate": "better-auth migrate",
     "rebuild": "node dist/scripts/rebuild.js",
     "rebuild:optimized": "node dist/scripts/rebuild-optimized.js",

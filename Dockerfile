@@ -74,6 +74,9 @@ COPY --chown=nodejs:nodejs --from=db-builder /app/data/nodes.db ./data-template/
 
 # Copy database schema
 COPY --chown=nodejs:nodejs src/database/schema-optimized.sql ./src/database/
+
+# Copy auth migration SQL files (tsc doesn't handle .sql)
+COPY --chown=nodejs:nodejs src/database/migrations/auth/*.sql ./dist/database/migrations/auth/
 COPY --chown=nodejs:nodejs .env.example ./
 
 # Copy OAuth UI files for better-auth integration
@@ -83,6 +86,7 @@ COPY --chown=nodejs:nodejs src/public ./dist/public
 COPY --chmod=755 docker/docker-entrypoint.sh /usr/local/bin/
 COPY --chown=nodejs:nodejs docker/parse-config.js /app/docker/
 COPY --chown=nodejs:nodejs --chmod=755 docker/run-oauth-migrations.js /app/docker/
+COPY --chown=nodejs:nodejs --chmod=755 docker/run-auth-migrations.js /app/docker/
 COPY --chown=nodejs:nodejs --chmod=755 docker/create-admin-user.js /app/docker/
 COPY --chmod=755 docker/n8n-mcp /usr/local/bin/
 

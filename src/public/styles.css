@@ -197,3 +197,276 @@ h2 {
     flex-direction: column-reverse;
   }
 }
+
+/* ── Management Pages ── */
+
+.manage-body {
+  display: block;
+  align-items: unset;
+  justify-content: unset;
+  padding: 0;
+  min-height: 100vh;
+}
+
+.page-container {
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px 20px 40px;
+  background: white;
+  min-height: 100vh;
+}
+
+.nav-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 24px;
+  border-bottom: 2px solid #e9ecef;
+  padding-bottom: 8px;
+}
+
+.nav-link {
+  padding: 8px 16px;
+  border-radius: 6px 6px 0 0;
+  text-decoration: none;
+  color: #666;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s, color 0.2s;
+}
+
+.nav-link:hover {
+  background: #f8f9fa;
+  color: #333;
+}
+
+.nav-link.active {
+  background: #667eea;
+  color: white;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+/* Data Table */
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 10px 12px;
+  background: #f8f9fa;
+  border-bottom: 2px solid #dee2e6;
+  color: #495057;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.data-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e9ecef;
+  vertical-align: middle;
+}
+
+.data-table tr:hover td {
+  background: #f8f9fa;
+}
+
+.data-table .loading,
+.data-table .empty {
+  text-align: center;
+  color: #999;
+  padding: 24px;
+}
+
+.data-table .monospace {
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.data-table code {
+  background: #e9ecef;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+}
+
+.actions-cell {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Badges */
+
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.badge-valid {
+  background: #d4edda;
+  color: #155724;
+}
+
+.badge-unverified {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.badge-invalid {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+/* Buttons */
+
+.btn-danger {
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.btn-danger:hover {
+  background: #c82333;
+}
+
+.btn-small {
+  padding: 5px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid #dee2e6;
+  background: white;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.btn-small:hover {
+  background: #f8f9fa;
+}
+
+.btn-primary.btn-small {
+  background: #667eea;
+  color: white;
+  border-color: #667eea;
+}
+
+.btn-primary.btn-small:hover {
+  background: #5568d3;
+  border-color: #5568d3;
+}
+
+.btn-danger.btn-small {
+  background: #dc3545;
+  color: white;
+  border-color: #dc3545;
+}
+
+/* Modal */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: white;
+  border-radius: 12px;
+  padding: 32px;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+
+.modal h2 {
+  margin-bottom: 16px;
+}
+
+.modal textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.modal textarea:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+/* Secret Display */
+
+.secret-display {
+  background: #1a1a1a;
+  color: #4ade80;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  word-break: break-all;
+  user-select: all;
+}
+
+/* Form Row */
+
+.form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.form-row .form-group {
+  flex: 1;
+}
+
+/* Success message reuse */
+
+.success-msg {
+  background: #d4edda !important;
+  border-color: #c3e6cb !important;
+  color: #155724 !important;
+}
+
+@media (max-width: 768px) {
+  .page-container {
+    padding: 12px;
+  }
+
+  .data-table {
+    font-size: 12px;
+  }
+
+  .form-row {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .actions-cell {
+    flex-direction: column;
+  }
+}

@@ -27,6 +27,7 @@ import { WorkflowValidator } from '../services/workflow-validator';
 import { isN8nApiConfigured } from '../config/n8n-api';
 import * as n8nHandlers from './handlers-n8n-manager';
 import { handleUpdatePartialWorkflow } from './handlers-workflow-diff';
+import * as userInstanceHandlers from './handlers-user-instances';
 import { getToolDocumentation, getToolsOverview } from './tools-documentation';
 import { PROJECT_VERSION } from '../utils/version';
 import { getNodeTypeAlternatives, getWorkflowNodeType } from '../utils/node-utils';
@@ -1310,6 +1311,22 @@ export class N8NDocumentationMCPServer {
         if (!this.templateService) throw new Error('Template service not initialized');
         if (!this.repository) throw new Error('Repository not initialized');
         return n8nHandlers.handleDeployTemplate(args, this.templateService, this.repository, this.instanceContext);
+
+      // User Instance Management Tools (uses auth.db via singleton)
+      case 'configure_n8n_instance':
+        this.validateToolParams(name, args, ['instanceName', 'n8nApiUrl', 'n8nApiKey']);
+        return userInstanceHandlers.handleConfigureInstance(args, this.instanceContext);
+      case 'list_n8n_instances':
+        return userInstanceHandlers.handleListInstances(args, this.instanceContext);
+      case 'set_default_n8n_instance':
+        this.validateToolParams(name, args, ['instanceId']);
+        return userInstanceHandlers.handleSetDefaultInstance(args, this.instanceContext);
+      case 'verify_n8n_instance':
+        this.validateToolParams(name, args, ['instanceId']);
+        return userInstanceHandlers.handleVerifyInstance(args, this.instanceContext);
+      case 'remove_n8n_instance':
+        this.validateToolParams(name, args, ['instanceId']);
+        return userInstanceHandlers.handleRemoveInstance(args, this.instanceContext);
 
       default:
         throw new Error(`Unknown tool: ${name}`);

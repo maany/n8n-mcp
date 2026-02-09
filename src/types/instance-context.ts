@@ -24,6 +24,12 @@ export interface InstanceContext {
   sessionId?: string;
 
   /**
+   * User identification for database lookups
+   * Used to retrieve user's stored n8n instances
+   */
+  userId?: string;
+
+  /**
    * Extensible metadata for future use
    * Allows passing additional configuration without interface changes
    */
@@ -116,11 +122,12 @@ export function isInstanceContext(obj: any): obj is InstanceContext {
 
   const hasValidInstanceId = obj.instanceId === undefined || typeof obj.instanceId === 'string';
   const hasValidSessionId = obj.sessionId === undefined || typeof obj.sessionId === 'string';
+  const hasValidUserId = obj.userId === undefined || typeof obj.userId === 'string';
   const hasValidMetadata = obj.metadata === undefined ||
     (typeof obj.metadata === 'object' && obj.metadata !== null);
 
   return hasValidUrl && hasValidKey && hasValidTimeout && hasValidRetries &&
-         hasValidInstanceId && hasValidSessionId && hasValidMetadata;
+         hasValidInstanceId && hasValidSessionId && hasValidUserId && hasValidMetadata;
 }
 
 /**

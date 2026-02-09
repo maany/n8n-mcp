@@ -69,6 +69,10 @@ const mockHandlers: { [key: string]: any[] } = {
   use: []
 };
 
+vi.mock('../../src/api/management-routes', () => ({
+  createManagementRouter: vi.fn(() => (req: any, res: any, next: any) => next())
+}));
+
 vi.mock('express', () => {
   // Create Express app mock inside the factory
   const mockExpressApp = {
@@ -81,9 +85,14 @@ vi.mock('express', () => {
       return mockExpressApp;
     }),
     delete: vi.fn((path: string, ...handlers: any[]) => {
-      // Store delete handlers in the same way as other methods
       if (!mockHandlers.delete) mockHandlers.delete = [];
       mockHandlers.delete.push({ path, handlers });
+      return mockExpressApp;
+    }),
+    all: vi.fn((path: string, ...handlers: any[]) => {
+      return mockExpressApp;
+    }),
+    patch: vi.fn((path: string, ...handlers: any[]) => {
       return mockExpressApp;
     }),
     use: vi.fn((handler: any) => {
@@ -100,22 +109,37 @@ vi.mock('express', () => {
       };
     })
   };
-  
+
+  // Create mock Router that returns a mini-app
+  const mockRouter = vi.fn(() => ({
+    get: vi.fn().mockReturnThis(),
+    post: vi.fn().mockReturnThis(),
+    delete: vi.fn().mockReturnThis(),
+    patch: vi.fn().mockReturnThis(),
+    use: vi.fn().mockReturnThis(),
+  }));
+
   // Create a properly typed mock for express with both app factory and middleware methods
   interface ExpressMock {
     (): typeof mockExpressApp;
     json(): (req: any, res: any, next: any) => void;
+    static(path: string): (req: any, res: any, next: any) => void;
   }
-  
+
   const expressMock = vi.fn(() => mockExpressApp) as unknown as ExpressMock;
   expressMock.json = vi.fn(() => (req: any, res: any, next: any) => {
     // Mock JSON parser middleware
     req.body = req.body || {};
     next();
   });
-  
+  expressMock.static = vi.fn(() => (req: any, res: any, next: any) => {
+    next();
+  });
+
   return {
     default: expressMock,
+    Router: mockRouter,
+    json: expressMock.json,
     Request: {},
     Response: {},
     NextFunction: {}

@@ -102,6 +102,14 @@ if [ "$ENABLE_OAUTH" = "true" ]; then
     fi
 fi
 
+# Custom auth table migrations (user_instances)
+if [ -f "/app/docker/run-auth-migrations.js" ]; then
+    log_message "Running auth custom table migrations..."
+    cd /app && node docker/run-auth-migrations.js || {
+        log_message "WARNING: Auth custom table migrations failed" >&2
+    }
+fi
+
 # Database validation helper function
 validate_database() {
     local db_path="$1"
