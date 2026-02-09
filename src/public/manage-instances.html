@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>n8n Instance Management - n8n MCP</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="manage-body">
+  <div class="page-container">
+    <nav class="nav-bar">
+      <a href="/manage/clients" class="nav-link">OIDC Clients</a>
+      <a href="/manage/instances" class="nav-link active">n8n Instances</a>
+    </nav>
+
+    <div class="header">
+      <h1>n8n Instances</h1>
+      <p class="subtitle">Manage your n8n instance connections</p>
+    </div>
+
+    <div id="error" class="error"></div>
+
+    <div class="toolbar">
+      <button id="btn-add" class="btn-primary btn-small" onclick="showAddForm()">Add Instance</button>
+    </div>
+
+    <table class="data-table" id="instances-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>URL</th>
+          <th>Status</th>
+          <th>Default</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="instances-body">
+        <tr><td colspan="5" class="loading">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Add Instance Modal -->
+    <div id="add-modal" class="modal-overlay" style="display:none">
+      <div class="modal">
+        <h2>Add n8n Instance</h2>
+        <div class="auth-form">
+          <div class="form-group">
+            <label for="inst-name">Instance Name</label>
+            <input type="text" id="inst-name" placeholder="Production">
+          </div>
+          <div class="form-group">
+            <label for="inst-url">n8n API URL</label>
+            <input type="url" id="inst-url" placeholder="https://n8n.example.com">
+          </div>
+          <div class="form-group">
+            <label for="inst-key">API Key</label>
+            <input type="password" id="inst-key" placeholder="n8n_api_...">
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="inst-default"> Set as default
+            </label>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="inst-timeout">Timeout (ms)</label>
+              <input type="number" id="inst-timeout" value="30000" min="1000">
+            </div>
+            <div class="form-group">
+              <label for="inst-retries">Max Retries</label>
+              <input type="number" id="inst-retries" value="3" min="0" max="10">
+            </div>
+          </div>
+          <div id="add-error" class="error"></div>
+          <div class="actions">
+            <button class="btn-secondary" onclick="hideAddForm()">Cancel</button>
+            <button class="btn-primary" onclick="addInstance()">Add Instance</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentUser = null;
+
+    async function checkSession() {
+      try {
+        const resp = await fetch('/api/auth/get-session', { credentials: 'include' });
+        if (!resp.ok) throw new Error('No session');
+        const data = await resp.json();
+        if (!data?.user?.id) throw new Error('No user');
+        currentUser = data.user;
+        loadInstances();
+      } catch {
+        window.location.href = '/sign-in?redirect=/manage/instances';
+      }
+    }
+
+    async function loadInstances() {
+      try {
+        const resp = await fetch('/api/manage/instances', { credentials: 'include' });
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          const detail = errData.detail || errData.error || resp.statusText;
+          throw new Error(detail);
+        }
+        const data = await resp.json();
+        renderInstances(data.instances || []);
+      } catch (err) {
+        document.getElementById('instances-body').innerHTML =
+          '<tr><td colspan="5" class="empty">' + escapeHtml(err.message) + '</td></tr>';
+        showError(err.message);
+      }
+    }
+
+    function renderInstances(instances) {
+      const tbody = document.getElementById('instances-body');
+      if (instances.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No instances configured</td></tr>';
+        return;
+      }
+      tbody.innerHTML = instances.map(inst => {
+        const statusClass = {
+          valid: 'badge-valid',
+          invalid: 'badge-invalid',
+          unverified: 'badge-unverified',
+          expired: 'badge-invalid',
+        }[inst.verificationStatus] || 'badge-unverified';
+
+        return `<tr>
+          <td>${escapeHtml(inst.instanceName)}</td>
+          <td class="monospace">${escapeHtml(inst.n8nApiUrl)}</td>
+          <td><span class="badge ${statusClass}">${inst.verificationStatus}</span></td>
+          <td>${inst.isDefault ? '<span class="badge badge-valid">Default</span>' : ''}</td>
+          <td class="actions-cell">
+            <button class="btn-small" onclick="verifyInstance('${inst.id}')" title="Verify connectivity">Verify</button>
+            ${!inst.isDefault ? '<button class="btn-small" onclick="setDefault(\'' + inst.id + '\')" title="Set as default">Default</button>' : ''}
+            <button class="btn-danger btn-small" onclick="deleteInstance('${inst.id}')" title="Delete">Delete</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    function showAddForm() {
+      document.getElementById('add-modal').style.display = 'flex';
+      document.getElementById('inst-name').value = '';
+      document.getElementById('inst-url').value = '';
+      document.getElementById('inst-key').value = '';
+      document.getElementById('inst-default').checked = false;
+      document.getElementById('inst-timeout').value = '30000';
+      document.getElementById('inst-retries').value = '3';
+      document.getElementById('add-error').textContent = '';
+    }
+
+    function hideAddForm() {
+      document.getElementById('add-modal').style.display = 'none';
+    }
+
+    async function addInstance() {
+      const name = document.getElementById('inst-name').value.trim();
+      const url = document.getElementById('inst-url').value.trim();
+      const key = document.getElementById('inst-key').value.trim();
+      const isDefault = document.getElementById('inst-default').checked;
+      const timeout = parseInt(document.getElementById('inst-timeout').value) || 30000;
+      const retries = parseInt(document.getElementById('inst-retries').value) || 3;
+
+      if (!name || !url || !key) {
+        document.getElementById('add-error').textContent = 'Name, URL, and API key are required';
+        return;
+      }
+
+      try {
+        const resp = await fetch('/api/manage/instances', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            instanceName: name,
+            n8nApiUrl: url,
+            n8nApiKey: key,
+            isDefault,
+            timeoutMs: timeout,
+            maxRetries: retries,
+          }),
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Failed to add instance');
+        }
+
+        hideAddForm();
+        loadInstances();
+      } catch (err) {
+        document.getElementById('add-error').textContent = err.message;
+      }
+    }
+
+    async function verifyInstance(id) {
+      try {
+        const resp = await fetch('/api/manage/instances/' + encodeURIComponent(id) + '/verify', {
+          method: 'POST',
+          credentials: 'include',
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Verification failed');
+        }
+
+        const result = await resp.json();
+        if (result.status === 'valid') {
+          showSuccess('Connection verified successfully');
+        } else {
+          showError('Verification failed: ' + result.message);
+        }
+        loadInstances();
+      } catch (err) {
+        showError(err.message);
+      }
+    }
+
+    async function setDefault(id) {
+      try {
+        const resp = await fetch('/api/manage/instances/' + encodeURIComponent(id) + '/default', {
+          method: 'PATCH',
+          credentials: 'include',
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Failed to set default');
+        }
+        loadInstances();
+      } catch (err) {
+        showError(err.message);
+      }
+    }
+
+    async function deleteInstance(id) {
+      if (!confirm('Delete this instance? This cannot be undone.')) return;
+
+      try {
+        const resp = await fetch('/api/manage/instances/' + encodeURIComponent(id), {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Failed to delete instance');
+        }
+        loadInstances();
+      } catch (err) {
+        showError(err.message);
+      }
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error');
+      el.textContent = msg;
+      el.className = 'error';
+      setTimeout(() => { el.textContent = ''; }, 5000);
+    }
+
+    function showSuccess(msg) {
+      const el = document.getElementById('error');
+      el.textContent = msg;
+      el.className = 'error success-msg';
+      setTimeout(() => { el.textContent = ''; el.className = 'error'; }, 3000);
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    checkSession();
+  </script>
+</body>
+</html>

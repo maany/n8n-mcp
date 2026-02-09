@@ -34,7 +34,7 @@ describe('n8nDocumentationToolsFinal', () => {
       // Define a minimal JSON Schema validator using Zod
       const jsonSchemaValidator = z.object({
         type: z.literal('object'),
-        properties: z.record(z.any()).optional(),
+        properties: z.record(z.string(), z.any()).optional(),
         required: z.array(z.string()).optional(),
       });
 

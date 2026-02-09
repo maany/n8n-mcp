@@ -430,6 +430,109 @@ export const n8nDocumentationToolsFinal: ToolDefinition[] = [
       idempotentHint: true,
     },
   },
+  // User Instance Management Tools
+  {
+    name: 'configure_n8n_instance',
+    description: `Save an n8n instance configuration (URL and API key) for future use. Credentials are encrypted before storage. Use setAsDefault=true to make this the default instance for workflow operations.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instanceName: {
+          type: 'string',
+          description: 'Friendly name for this instance (e.g., "Production", "Development")',
+        },
+        n8nApiUrl: {
+          type: 'string',
+          description: 'n8n instance API URL (e.g., "https://n8n.example.com")',
+        },
+        n8nApiKey: {
+          type: 'string',
+          description: 'n8n API key for authentication',
+        },
+        setAsDefault: {
+          type: 'boolean',
+          description: 'Set this as the default instance for operations',
+          default: false,
+        },
+      },
+      required: ['instanceName', 'n8nApiUrl', 'n8nApiKey'],
+    },
+    annotations: {
+      title: 'Configure n8n Instance',
+      readOnlyHint: false,
+      idempotentHint: false,
+    },
+  },
+  {
+    name: 'list_n8n_instances',
+    description: `List all configured n8n instances for the current user. Returns instance names, URLs, and verification status. API keys are never returned.`,
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+    annotations: {
+      title: 'List n8n Instances',
+      readOnlyHint: true,
+      idempotentHint: true,
+    },
+  },
+  {
+    name: 'set_default_n8n_instance',
+    description: `Set which n8n instance to use by default for workflow operations. The default instance is used when no specific instance is specified.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instanceId: {
+          type: 'string',
+          description: 'ID of the instance to set as default (from list_n8n_instances)',
+        },
+      },
+      required: ['instanceId'],
+    },
+    annotations: {
+      title: 'Set Default Instance',
+      readOnlyHint: false,
+      idempotentHint: true,
+    },
+  },
+  {
+    name: 'verify_n8n_instance',
+    description: `Test connection to a configured n8n instance. Verifies that the stored credentials are valid and the instance is reachable.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instanceId: {
+          type: 'string',
+          description: 'ID of the instance to verify (from list_n8n_instances)',
+        },
+      },
+      required: ['instanceId'],
+    },
+    annotations: {
+      title: 'Verify n8n Instance',
+      readOnlyHint: true,
+      idempotentHint: true,
+    },
+  },
+  {
+    name: 'remove_n8n_instance',
+    description: `Remove a configured n8n instance. This permanently deletes the stored credentials.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instanceId: {
+          type: 'string',
+          description: 'ID of the instance to remove (from list_n8n_instances)',
+        },
+      },
+      required: ['instanceId'],
+    },
+    annotations: {
+      title: 'Remove n8n Instance',
+      readOnlyHint: false,
+      idempotentHint: false,
+    },
+  },
 ];
 
 /**

@@ -14,6 +14,42 @@ vi.mock('../../src/utils/logger', () => ({
 
 vi.mock('dotenv');
 
+vi.mock('../../src/utils/auth', () => ({
+  AuthManager: { timingSafeCompare: vi.fn((a: string, b: string) => a === b) },
+  authHandler: vi.fn(),
+  verifyOAuthToken: vi.fn().mockResolvedValue({ valid: false }),
+  auth: { api: {}, options: {} }
+}));
+
+vi.mock('express-rate-limit', () => ({
+  default: vi.fn(() => (req: any, res: any, next: any) => next())
+}));
+
+vi.mock('../../src/database/shared-database', () => ({
+  closeSharedDatabase: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock('../../src/mcp/handlers-user-instances', () => ({
+  getDefaultInstanceContext: vi.fn(() => null)
+}));
+
+vi.mock('../../src/database/auth-migration-runner', () => ({
+  runAuthMigrations: vi.fn()
+}));
+
+vi.mock('better-sqlite3', () => ({
+  default: vi.fn(() => ({
+    pragma: vi.fn(),
+    close: vi.fn()
+  }))
+}));
+
+vi.mock('../../src/utils/protocol-version', () => ({
+  negotiateProtocolVersion: vi.fn(() => ({ version: '2025-03-26' })),
+  logProtocolNegotiation: vi.fn(),
+  STANDARD_PROTOCOL_VERSION: '2025-03-26'
+}));
+
 // Mock UUID generation to make tests predictable
 vi.mock('uuid', () => ({
   v4: vi.fn(() => 'test-session-id-1234-5678-9012-345678901234')
@@ -110,6 +146,10 @@ const mockHandlers: { [key: string]: any[] } = {
   use: []
 };
 
+vi.mock('../../src/api/management-routes', () => ({
+  createManagementRouter: vi.fn(() => (req: any, res: any, next: any) => next())
+}));
+
 // Mock Express
 vi.mock('express', () => {
   const mockExpressApp = {
@@ -123,6 +163,9 @@ vi.mock('express', () => {
     }),
     delete: vi.fn((path: string, ...handlers: any[]) => {
       mockHandlers.delete.push({ path, handlers });
+      return mockExpressApp;
+    }),
+    all: vi.fn((path: string, ...handlers: any[]) => {
       return mockExpressApp;
     }),
     use: vi.fn((handler: any) => {
@@ -150,6 +193,7 @@ vi.mock('express', () => {
     req.body = req.body || {};
     next();
   });
+  (expressMock as any).static = vi.fn(() => (req: any, res: any, next: any) => next());
 
   return {
     default: expressMock,

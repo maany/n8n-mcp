@@ -25,6 +25,9 @@ import {
 import { InstanceContext, validateInstanceContext } from './types/instance-context';
 import { SessionState } from './types/session-state';
 import { closeSharedDatabase } from './database/shared-database';
+import { getDefaultInstanceContext } from './mcp/handlers-user-instances';
+import { runAuthMigrations } from './database/auth-migration-runner';
+import { createManagementRouter } from './api/management-routes';
 import path from 'path';
 import Database from 'better-sqlite3';
 
@@ -39,6 +42,7 @@ interface MultiTenantHeaders {
   'x-n8n-key'?: string;
   'x-instance-id'?: string;
   'x-session-id'?: string;
+  'x-user-id'?: string;
 }
 
 // Session management constants
@@ -71,6 +75,7 @@ function extractMultiTenantHeaders(req: express.Request): MultiTenantHeaders {
     'x-n8n-key': req.headers['x-n8n-key'] as string | undefined,
     'x-instance-id': req.headers['x-instance-id'] as string | undefined,
     'x-session-id': req.headers['x-session-id'] as string | undefined,
+    'x-user-id': req.headers['x-user-id'] as string | undefined,
   };
 }
 
@@ -707,9 +712,37 @@ export class SingleSessionHTTPServer {
   }
 
   /**
+   * Run auth.db migrations (user_instances table etc.) eagerly at startup.
+   * Opens auth.db, applies pending migrations, then closes the handle.
+   */
+  private runAuthDbMigrations(): void {
+    try {
+      const dataDir = path.join(process.cwd(), 'data');
+      const fs = require('fs');
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+
+      const dbPath = path.join(dataDir, 'auth.db');
+      const db = new Database(dbPath);
+      db.pragma('journal_mode = WAL');
+      db.pragma('foreign_keys = ON');
+
+      runAuthMigrations(db);
+      db.close();
+      logger.info('Auth database migrations completed');
+    } catch (error) {
+      logger.warn('Auth database migrations failed (non-fatal)', error);
+    }
+  }
+
+  /**
    * Start the HTTP server
    */
   async start(): Promise<void> {
+    // Run auth.db migrations before setting up Express
+    this.runAuthDbMigrations();
+
     const app = express();
     
     // Create JSON parser middleware for endpoints that need it
@@ -1274,6 +1307,24 @@ export class SingleSessionHTTPServer {
         }
       });
     }
+
+    // Mount management routes and pages (requires OAuth)
+    if (process.env.ENABLE_OAUTH === 'true') {
+      const publicPath = path.join(process.cwd(), 'dist', 'public');
+
+      app.use('/api/manage', createManagementRouter(this.authToken ?? undefined));
+
+      app.get('/manage/clients', (req, res) => {
+        res.sendFile(path.join(publicPath, 'manage-clients.html'));
+      });
+
+      app.get('/manage/instances', (req, res) => {
+        res.sendFile(path.join(publicPath, 'manage-instances.html'));
+      });
+
+      logger.info('Management pages enabled at /manage/clients and /manage/instances');
+    }
+
     // Handle MCP at root (for Claude.ai compatibility)
     app.post('/', (req, res, next) => {
       // Forward to /mcp handler
@@ -1735,54 +1786,84 @@ export class SingleSessionHTTPServer {
         sessionId: this.singleSessionId
       });
 
-      // Extract instance context from headers if present (for multi-tenant support)
+      // Resolve instance context using three-path resolution:
+      // 1. Explicit headers (x-n8n-url + x-n8n-key) — override
+      // 2. User's default database instance — NEW
+      // 3. undefined — env var fallback preserved downstream
       const instanceContext: InstanceContext | undefined = (() => {
-        // Use type-safe header extraction
         const headers = extractMultiTenantHeaders(req);
         const hasUrl = headers['x-n8n-url'];
         const hasKey = headers['x-n8n-key'];
 
-        if (!hasUrl && !hasKey) return undefined;
+        // Determine userId from OAuth auth or x-user-id header
+        const userId = (req as any).oauthUserId as string | undefined
+          || headers['x-user-id']
+          || undefined;
 
-        // Create context with proper type handling
-        const context: InstanceContext = {
-          n8nApiUrl: hasUrl || undefined,
-          n8nApiKey: hasKey || undefined,
-          instanceId: headers['x-instance-id'] || undefined,
-          sessionId: headers['x-session-id'] || undefined
-        };
-
-        // Add metadata if available
-        if (req.headers['user-agent'] || req.ip) {
-          context.metadata = {
-            userAgent: req.headers['user-agent'] as string | undefined,
-            ip: req.ip
+        // Path 1: Explicit headers present — build context from headers
+        if (hasUrl && hasKey) {
+          const context: InstanceContext = {
+            n8nApiUrl: hasUrl,
+            n8nApiKey: hasKey,
+            instanceId: headers['x-instance-id'] || undefined,
+            sessionId: headers['x-session-id'] || undefined,
+            userId
           };
+
+          if (req.headers['user-agent'] || req.ip) {
+            context.metadata = {
+              userAgent: req.headers['user-agent'] as string | undefined,
+              ip: req.ip
+            };
+          }
+
+          const validation = validateInstanceContext(context);
+          if (!validation.valid) {
+            logger.warn('Invalid instance context from headers', {
+              errors: validation.errors,
+              hasUrl: !!hasUrl,
+              hasKey: !!hasKey
+            });
+            return undefined;
+          }
+
+          return context;
         }
 
-        // Validate the context
-        const validation = validateInstanceContext(context);
-        if (!validation.valid) {
-          logger.warn('Invalid instance context from headers', {
-            errors: validation.errors,
-            hasUrl: !!hasUrl,
-            hasKey: !!hasKey
-          });
-          return undefined;
+        // Path 2: No explicit headers but userId available — try database lookup
+        if (userId) {
+          const dbContext = getDefaultInstanceContext(userId);
+          if (dbContext) {
+            logger.info('Instance context resolved from user database', {
+              userId,
+              instanceId: dbContext.instanceId ? dbContext.instanceId.substring(0, 8) + '...' : undefined,
+              hasUrl: !!dbContext.n8nApiUrl,
+              hasKey: !!dbContext.n8nApiKey
+            });
+            return dbContext;
+          }
+
+          // No default instance in DB — return minimal context so user-instance
+          // management tools can still identify the user
+          return { userId };
         }
 
-        return context;
+        // Path 3: No info — return undefined (env var fallback preserved)
+        return undefined;
       })();
 
-      // Log context extraction for debugging (only if context exists)
+      // Log context resolution for debugging (only if context exists)
       if (instanceContext) {
-        // Use sanitized logging for security
-        logger.debug('Instance context extracted from headers', {
+        logger.debug('Instance context resolved', {
+          userId: instanceContext.userId,
           hasUrl: !!instanceContext.n8nApiUrl,
           hasKey: !!instanceContext.n8nApiKey,
           instanceId: instanceContext.instanceId ? instanceContext.instanceId.substring(0, 8) + '...' : undefined,
           sessionId: instanceContext.sessionId ? instanceContext.sessionId.substring(0, 8) + '...' : undefined,
-          urlDomain: instanceContext.n8nApiUrl ? new URL(instanceContext.n8nApiUrl).hostname : undefined
+          urlDomain: instanceContext.n8nApiUrl ? new URL(instanceContext.n8nApiUrl).hostname : undefined,
+          source: instanceContext.n8nApiUrl && instanceContext.n8nApiKey
+            ? (extractMultiTenantHeaders(req)['x-n8n-url'] ? 'headers' : 'database')
+            : (instanceContext.userId ? 'userId-only' : 'none')
         });
       }
 
