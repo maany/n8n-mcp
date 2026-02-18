@@ -84,6 +84,18 @@ export interface SessionState {
     sessionId?: string;
 
     /**
+     * User ID for per-client key derivation on restore (optional)
+     * Used to rebuild the clientSessions routing map after restart
+     */
+    userId?: string;
+
+    /**
+     * Client routing key (optional)
+     * The derived key used to route requests to this session's transport
+     */
+    clientKey?: string;
+
+    /**
      * Additional metadata (optional)
      * Extensible field for custom application data
      */

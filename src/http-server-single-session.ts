@@ -17,6 +17,7 @@ import dotenv from 'dotenv';
 import { getStartupBaseUrl, formatEndpointUrls, detectBaseUrl } from './utils/url-detector';
 import { PROJECT_VERSION } from './utils/version';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 import {
   negotiateProtocolVersion,
   logProtocolNegotiation,
@@ -115,6 +116,8 @@ export class SingleSessionHTTPServer {
   private sessionMetadata: { [sessionId: string]: { lastAccess: Date; createdAt: Date } } = {};
   private sessionContexts: { [sessionId: string]: InstanceContext | undefined } = {};
   private contextSwitchLocks: Map<string, Promise<void>> = new Map();
+  // Per-client routing: maps a derived client key to a sessionId
+  private clientSessions: Map<string, string> = new Map();
   private session: Session | null = null;  // Keep for SSE compatibility
   private consoleManager = new ConsoleManager();
   private expressServer: any;
@@ -261,6 +264,21 @@ export class SingleSessionHTTPServer {
       delete this.sessionMetadata[sessionId];
       delete this.sessionContexts[sessionId];
 
+      // Clean up clientSessions reverse mapping
+      for (const [clientKey, sid] of this.clientSessions.entries()) {
+        if (sid === sessionId) {
+          this.clientSessions.delete(clientKey);
+          break;
+        }
+      }
+
+      // Clean up legacy single-session refs if they point to this session
+      if (this.singleSessionId === sessionId) {
+        this.singleTransport = null;
+        this.singleServer = null;
+        this.singleSessionId = null;
+      }
+
       // Close server first (may have references to transport)
       // This fixes memory leak where server resources weren't freed (issue #471)
       // Handle server close errors separately so transport close still runs
@@ -359,6 +377,138 @@ export class SingleSessionHTTPServer {
     if (this.sessionMetadata[sessionId]) {
       this.sessionMetadata[sessionId].lastAccess = new Date();
     }
+  }
+
+  /**
+   * Derive a routing key from the request to isolate per-client transports.
+   * Priority: OAuth userId > instance URL hash > "default" (backward-compatible)
+   */
+  private deriveClientKey(req: express.Request, instanceContext?: InstanceContext): string {
+    // Priority 1: OAuth user ID
+    const oauthUserId = (req as any).oauthUserId as string | undefined;
+    if (oauthUserId) {
+      return `user:${oauthUserId}`;
+    }
+
+    // Priority 2: Instance context URL hash
+    if (instanceContext?.n8nApiUrl) {
+      const hash = createHash('sha256').update(instanceContext.n8nApiUrl).digest('hex').slice(0, 16);
+      return `instance:${hash}`;
+    }
+
+    // Priority 3: Default single transport (backward-compatible)
+    return 'default';
+  }
+
+  /**
+   * Compare two instance contexts to detect credential rotation or mismatch.
+   */
+  private isContextMatching(
+    ctx1: InstanceContext | undefined,
+    ctx2: InstanceContext | undefined
+  ): boolean {
+    // Both undefined = match
+    if (!ctx1 && !ctx2) return true;
+    // One undefined = mismatch
+    if (!ctx1 || !ctx2) return false;
+
+    return ctx1.n8nApiUrl === ctx2.n8nApiUrl &&
+           ctx1.n8nApiKey === ctx2.n8nApiKey &&
+           ctx1.userId === ctx2.userId;
+  }
+
+  /**
+   * Get or create a transport for a specific client key.
+   * Each client key gets its own isolated transport + MCP server.
+   */
+  private async getOrCreateClientTransport(
+    clientKey: string,
+    instanceContext?: InstanceContext
+  ): Promise<StreamableHTTPServerTransport> {
+    // Look up existing session for this client key
+    const existingSessionId = this.clientSessions.get(clientKey);
+
+    if (existingSessionId && this.transports[existingSessionId]) {
+      const existingContext = this.sessionContexts[existingSessionId];
+
+      // If context matches, reuse the transport
+      if (this.isContextMatching(existingContext, instanceContext)) {
+        this.updateSessionAccess(existingSessionId);
+        return this.transports[existingSessionId];
+      }
+
+      // Context mismatch (e.g., rotated API key) — tear down and recreate
+      logger.info('Client context mismatch, resetting transport', {
+        clientKey,
+        sessionId: existingSessionId
+      });
+      await this.removeSession(existingSessionId, 'context_mismatch');
+      this.clientSessions.delete(clientKey);
+    } else if (existingSessionId) {
+      // Session ID exists in map but transport is gone (orphaned entry)
+      this.clientSessions.delete(clientKey);
+    }
+
+    // Enforce MAX_SESSIONS
+    if (!this.canCreateSession()) {
+      throw new Error(`Maximum sessions (${MAX_SESSIONS}) reached`);
+    }
+
+    // Create new transport + server for this client
+    const sessionId = uuidv4();
+    logger.info('Creating per-client transport', { clientKey, sessionId });
+
+    const server = new N8NDocumentationMCPServer(instanceContext);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => sessionId,
+      enableJsonResponse: true,
+      onsessioninitialized: (sid: string) => {
+        logger.info('Per-client session initialized', { clientKey, sessionId: sid });
+      }
+    });
+
+    // Set up cleanup handler
+    transport.onclose = () => {
+      logger.info('Per-client transport closed', { clientKey, sessionId });
+      delete this.transports[sessionId];
+      delete this.servers[sessionId];
+      delete this.sessionMetadata[sessionId];
+      delete this.sessionContexts[sessionId];
+      // Clean up clientSessions reverse mapping
+      if (this.clientSessions.get(clientKey) === sessionId) {
+        this.clientSessions.delete(clientKey);
+      }
+      // Clean up legacy single-session refs if they point to this session
+      if (this.singleSessionId === sessionId) {
+        this.singleTransport = null;
+        this.singleServer = null;
+        this.singleSessionId = null;
+      }
+    };
+
+    transport.onerror = (error: Error) => {
+      logger.error('Per-client transport error', { clientKey, sessionId, error: error.message });
+    };
+
+    // Connect server to transport
+    await server.connect(transport);
+
+    // Register in all maps
+    this.transports[sessionId] = transport;
+    this.servers[sessionId] = server;
+    this.sessionMetadata[sessionId] = {
+      lastAccess: new Date(),
+      createdAt: new Date()
+    };
+    this.sessionContexts[sessionId] = instanceContext;
+    this.clientSessions.set(clientKey, sessionId);
+
+    // Also keep legacy refs updated for backward compatibility
+    this.singleTransport = transport;
+    this.singleServer = server;
+    this.singleSessionId = sessionId;
+
+    return transport;
   }
 
   /**
@@ -563,29 +713,34 @@ export class SingleSessionHTTPServer {
     // Wrap all operations to prevent console interference
     return this.consoleManager.wrapOperation(async () => {
       try {
-        logger.info('[TRACE] handleRequest ENTRY - using single session', {
+        const clientKey = this.deriveClientKey(req, instanceContext);
+
+        logger.info('[TRACE] handleRequest ENTRY - per-client routing', {
+          clientKey,
           acceptHeader: req.headers.accept,
           method: req.body?.method
         });
 
-        // If this is an initialize request and we already have a session, reset it
-        // This allows clients to reconnect without getting "Server already initialized" errors
-        if (req.body?.method === 'initialize' && this.singleTransport) {
-          logger.info('Received initialize request with existing session - resetting session');
-          await this.resetSingleSession();
+        // If this is an initialize request and a transport exists for this client, reset ONLY this client
+        if (req.body?.method === 'initialize') {
+          const existingSessionId = this.clientSessions.get(clientKey);
+          if (existingSessionId && this.transports[existingSessionId]) {
+            logger.info('Received initialize request with existing client session - resetting', {
+              clientKey,
+              sessionId: existingSessionId
+            });
+            await this.removeSession(existingSessionId, 'reinitialize');
+            this.clientSessions.delete(clientKey);
+          }
         }
 
-        // Use the single session transport for all requests
-        const transport = await this.getOrCreateSingleTransport(instanceContext);
-
-        // Update session access time if session exists
-        if (this.singleSessionId && this.sessionMetadata[this.singleSessionId]) {
-          this.updateSessionAccess(this.singleSessionId);
-        }
+        // Get or create transport for this client key
+        const transport = await this.getOrCreateClientTransport(clientKey, instanceContext);
 
         // Handle request with the transport
         logger.info('[TRACE] About to call transport.handleRequest', {
-          sessionId: this.singleSessionId,
+          clientKey,
+          sessionId: this.clientSessions.get(clientKey),
           method: req.body?.method,
           acceptHeader: req.headers.accept
         });
@@ -593,8 +748,8 @@ export class SingleSessionHTTPServer {
         await transport.handleRequest(req, res, req.body);
 
         const duration = Date.now() - startTime;
-        logger.info('MCP request completed', { duration, sessionId: transport.sessionId });
-        
+        logger.info('MCP request completed', { duration, clientKey, sessionId: transport.sessionId });
+
       } catch (error) {
         logger.error('handleRequest: MCP request error:', {
           error: error instanceof Error ? error.message : error,
@@ -609,11 +764,11 @@ export class SingleSessionHTTPServer {
           },
           duration: Date.now() - startTime
         });
-        
+
         if (!res.headersSent) {
           // Send sanitized error to client
           const sanitizedError = this.sanitizeErrorForClient(error);
-          res.status(500).json({ 
+          res.status(500).json({
             jsonrpc: '2.0',
             error: {
               code: -32603,
@@ -1654,31 +1809,19 @@ export class SingleSessionHTTPServer {
         hasAuthHeader: !!req.headers.authorization
       });
 
-      // Handle connection close to immediately clean up sessions
+      // Handle connection close — DO NOT destroy transport on transient drops.
+      // Periodic cleanupExpiredSessions() handles true session expiry.
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      // Only add event listener if the request object supports it (not in test mocks)
       if (typeof req.on === 'function') {
         const closeHandler = () => {
-          if (!res.headersSent && sessionId) {
-            logger.info('Connection closed before response sent', { sessionId });
-            // Schedule immediate cleanup if connection closes unexpectedly
-            setImmediate(() => {
-              if (this.sessionMetadata[sessionId]) {
-                const metadata = this.sessionMetadata[sessionId];
-                const timeSinceAccess = Date.now() - metadata.lastAccess.getTime();
-                // Only remove if it's been inactive for a bit to avoid race conditions
-                if (timeSinceAccess > 60000) { // 1 minute
-                  this.removeSession(sessionId, 'connection_closed').catch(err => {
-                    logger.error('Error during connection close cleanup', { error: err });
-                  });
-                }
-              }
-            });
+          if (sessionId) {
+            logger.debug('HTTP connection closed', { sessionId, headersSent: res.headersSent });
+            // Don't destroy transport — periodic cleanup handles expiry
           }
         };
-        
+
         req.on('close', closeHandler);
-        
+
         // Clean up event listener when response ends to prevent memory leaks
         res.on('finish', () => {
           req.removeListener('close', closeHandler);
@@ -2178,6 +2321,15 @@ export class SingleSessionHTTPServer {
         continue;
       }
 
+      // Find client key for this session (reverse lookup)
+      let clientKey: string | undefined;
+      for (const [ck, sid] of this.clientSessions.entries()) {
+        if (sid === sessionId) {
+          clientKey = ck;
+          break;
+        }
+      }
+
       seenSessionIds.add(sessionId);
       sessions.push({
         sessionId,
@@ -2190,6 +2342,8 @@ export class SingleSessionHTTPServer {
           n8nApiKey: context.n8nApiKey,
           instanceId: context.instanceId || sessionId, // Use sessionId as fallback
           sessionId: context.sessionId,
+          userId: context.userId,
+          clientKey,
           metadata: context.metadata
         }
       });
@@ -2297,8 +2451,14 @@ export class SingleSessionHTTPServer {
           n8nApiKey: sessionState.context.n8nApiKey,
           instanceId: sessionState.context.instanceId,
           sessionId: sessionState.context.sessionId,
+          userId: sessionState.context.userId,
           metadata: sessionState.context.metadata
         };
+
+        // Rebuild clientSessions routing map
+        if (sessionState.context.clientKey) {
+          this.clientSessions.set(sessionState.context.clientKey, sessionState.sessionId);
+        }
 
         logger.debug(`Restored session ${sessionState.sessionId}`);
         logSecurityEvent('session_restore', {
